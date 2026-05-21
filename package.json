@@ -1,0 +1,131 @@
+{
+  "name": "dev-browser-panel",
+  "displayName": "Dev Browser Panel",
+  "description": "Embedded Chromium inside VS Code, controllable via CDP. Built so AI agents (Claude Code, dev-browser CLI, etc.) can drive a browser the user sees inside the editor. Includes logs panel, multi-tab, and autoreload.",
+  "version": "0.1.0",
+  "publisher": "ordinum-team",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ordinum-team/dev-browser-panel"
+  },
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "browser",
+    "chromium",
+    "cdp",
+    "dev-browser",
+    "claude-code",
+    "automation"
+  ],
+  "activationEvents": [],
+  "main": "./out/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "panel": [
+        {
+          "id": "dev-browser-logs",
+          "title": "Browser Logs",
+          "icon": "media/logs-icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "dev-browser-logs": [
+        {
+          "type": "webview",
+          "id": "devBrowserPanel.logsView",
+          "name": "Browser Logs"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "devBrowserPanel.open",
+        "title": "Dev Browser Panel: Open",
+        "category": "Dev Browser Panel"
+      },
+      {
+        "command": "devBrowserPanel.newTab",
+        "title": "Dev Browser Panel: New Tab",
+        "category": "Dev Browser Panel"
+      },
+      {
+        "command": "devBrowserPanel.reload",
+        "title": "Dev Browser Panel: Reload Current Tab",
+        "category": "Dev Browser Panel"
+      },
+      {
+        "command": "devBrowserPanel.toggleAutoreload",
+        "title": "Dev Browser Panel: Toggle Autoreload",
+        "category": "Dev Browser Panel"
+      },
+      {
+        "command": "devBrowserPanel.showLogs",
+        "title": "Dev Browser Panel: Show Logs",
+        "category": "Dev Browser Panel"
+      },
+      {
+        "command": "devBrowserPanel.stopChromium",
+        "title": "Dev Browser Panel: Stop Chromium",
+        "category": "Dev Browser Panel"
+      }
+    ],
+    "configuration": {
+      "title": "Dev Browser Panel",
+      "properties": {
+        "devBrowserPanel.cdpPort": {
+          "type": "number",
+          "default": 9333,
+          "description": "Fixed CDP port for the embedded Chromium. Connect dev-browser CLI with `dev-browser --connect http://localhost:<port>`."
+        },
+        "devBrowserPanel.startUrl": {
+          "type": "string",
+          "default": "about:blank",
+          "description": "URL to open in the first tab when the panel starts."
+        },
+        "devBrowserPanel.autoreloadGlob": {
+          "type": "string",
+          "default": "**/*.{html,htm,css,scss,sass,less,js,mjs,cjs,jsx,ts,tsx,vue,svelte}",
+          "description": "Glob pattern of workspace files that trigger autoreload when changed."
+        },
+        "devBrowserPanel.autoreloadDebounceMs": {
+          "type": "number",
+          "default": 350,
+          "description": "Debounce window (ms) for autoreload file changes."
+        },
+        "devBrowserPanel.chromiumPath": {
+          "type": "string",
+          "default": "",
+          "description": "Override path to Chromium binary. Leave blank to auto-detect Playwright's chrome-headless-shell."
+        },
+        "devBrowserPanel.viewport": {
+          "type": "object",
+          "default": { "width": 1280, "height": 800 },
+          "description": "Initial viewport size for the embedded Chromium."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.80.0",
+    "@types/ws": "^8.5.10",
+    "@vscode/vsce": "^2.24.0",
+    "typescript": "^5.4.0"
+  },
+  "dependencies": {
+    "ws": "^8.16.0"
+  }
+}
