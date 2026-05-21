@@ -1,13 +1,15 @@
 import { EventEmitter } from "events";
-import * as os from "os";
-import * as path from "path";
 import { CDPClient, CDPEvent } from "./cdp";
 import {
   BrowserHandle,
   launchChromium,
   findChromiumBinary,
-  writePortFile,
-  removePortFile,
+  findFreePort,
+  profileDir,
+  writeInstancePortFile,
+  writeGlobalPortFile,
+  removeInstancePortFile,
+  removeGlobalPortFileIfMatches,
 } from "./chromium";
 
 export interface TargetInfo {
@@ -23,6 +25,7 @@ export interface SessionOptions {
   startUrl: string;
   viewport: { width: number; height: number };
   chromiumPath?: string;
+  workspaceDir: string;
 }
 
 /**
@@ -34,6 +37,7 @@ export class Session extends EventEmitter {
   private cdp: CDPClient | null = null;
   public targets = new Map<string, TargetInfo>();
   public activeTargetId: string | null = null;
+  public allocatedPort: number = 0;
 
   constructor(private opts: SessionOptions) {
     super();
@@ -46,16 +50,19 @@ export class Session extends EventEmitter {
         "Chromium binary not found. Install via `npx playwright install chromium` or set `devBrowserPanel.chromiumPath`.",
       );
     }
-    const userDataDir = path.join(os.homedir(), ".dev-browser-panel", "chromium-profile");
+    const port = await findFreePort(this.opts.port);
+    this.allocatedPort = port;
+    const userDataDir = profileDir(this.opts.workspaceDir);
     this.chromium = await launchChromium({
       binary,
-      port: this.opts.port,
+      port,
       startUrl: this.opts.startUrl,
       userDataDir,
       viewport: this.opts.viewport,
     });
 
-    writePortFile(this.opts.port);
+    writeInstancePortFile(this.opts.workspaceDir, port);
+    writeGlobalPortFile(port, this.opts.workspaceDir);
 
     this.cdp = new CDPClient();
     await this.cdp.connect(this.chromium.wsEndpoint);
@@ -165,7 +172,8 @@ export class Session extends EventEmitter {
   }
 
   async stop(): Promise<void> {
-    removePortFile();
+    removeInstancePortFile(this.opts.workspaceDir);
+    if (this.allocatedPort) removeGlobalPortFileIfMatches(this.allocatedPort);
     if (this.cdp) {
       this.cdp.close();
       this.cdp = null;

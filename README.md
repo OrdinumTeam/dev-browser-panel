@@ -27,8 +27,8 @@ VS Code extension that embeds a Chromium browser inside the editor, controllable
 - **Copy HAR** — one click exports captured network traffic as HAR 1.2 (headers + response bodies, importable to Chrome DevTools, Postman, har-analyzer, etc.). Memory-capped at ~35MB to keep the webview light.
 - **Multi-tab** — open multiple Chromium targets, switch with tab strip
 - **Autoreload** — file watcher on workspace, debounced `Page.reload` on the active tab
-- **Fixed CDP port** — defaults to `9333`, configurable, so `dev-browser --connect localhost:9333` always works
-- **Port file for auto-discovery** — `~/.dev-browser-panel/port` written on start, deleted on stop
+- **Per-instance isolation** — each VS Code window gets its own Chromium with its own profile (cookies/localStorage isolated), automatically allocated to a free port starting at `cdpPort` (default `9333`, scans next 50 if busy)
+- **Workspace-local port file** for auto-discovery — `<workspace>/.dev-browser-panel/port` so terminals in that project pick up the right browser. A global pointer at `~/.dev-browser-panel/port` (most recently opened) is also maintained.
 
 ## Quick Start
 
@@ -62,14 +62,20 @@ The extension is **agent-agnostic** — it only exposes standard CDP on a fixed 
 
 ### Auto-discovery snippet (works for any agent)
 
+Each project has its own browser, discovered via `<project>/.dev-browser-panel/port`. Most agents run with the project root as cwd, so just:
+
 ```bash
-dev-browser --connect "http://localhost:$(cat ~/.dev-browser-panel/port)" <<'EOF'
+dev-browser --connect "http://localhost:$(cat .dev-browser-panel/port 2>/dev/null || cat ~/.dev-browser-panel/port)" <<'EOF'
 const tabs = await browser.listPages();
 const page = await browser.getPage(tabs[0].id);
 await page.goto("https://example.com");
 console.log(await page.title());
 EOF
 ```
+
+The fallback to `~/.dev-browser-panel/port` works because the extension writes a "most-recently-opened" global pointer there too. If you're not in a project root, you still hit *some* browser.
+
+> Add `.dev-browser-panel/` to your project's `.gitignore` — it contains the Chromium profile and shouldn't be committed.
 
 ### Claude Code
 
@@ -138,13 +144,15 @@ If you already use the `dev-browser` CLI, the Chromium is already installed (it 
 
 ### Port already in use
 
-If you open the panel in two VS Code windows at the same time (each runs its own extension host), the second one will fail with a port conflict because both try to bind `9333`. Fix: add a workspace-level override in the second window's `.vscode/settings.json`:
+From v0.2.0 this is handled automatically — the panel scans the next 50 ports from `cdpPort` and uses the first free one. The status bar shows the actual port (e.g. `Browser :9334`).
+
+If you need a deterministic port for a specific workspace, override in that project's `.vscode/settings.json`:
 
 ```json
-{ "devBrowserPanel.cdpPort": 9334 }
+{ "devBrowserPanel.cdpPort": 9444 }
 ```
 
-The `~/.dev-browser-panel/port` file always reflects the most-recently-started session.
+Each project's actual port is in `<project>/.dev-browser-panel/port`. The global `~/.dev-browser-panel/port` points to the most-recently-opened session.
 
 ### Chromium not found
 
@@ -179,10 +187,10 @@ The extension uses `Host: localhost` header (required to bypass CDP's DNS-rebind
 
 ### dev-browser CLI says "no pages"
 
-Make sure you're connecting to the right port:
+Make sure you're connecting to the right port. Prefer the project-local file:
 
 ```bash
-dev-browser --connect "http://localhost:$(cat ~/.dev-browser-panel/port)"
+dev-browser --connect "http://localhost:$(cat .dev-browser-panel/port 2>/dev/null || cat ~/.dev-browser-panel/port)"
 ```
 
 ### Network tab fica vazio

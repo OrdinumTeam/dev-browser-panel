@@ -3,6 +3,7 @@ import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
 import * as http from "http";
+import * as net from "net";
 
 export function findChromiumBinary(override?: string): string | null {
   if (override && override.trim().length > 0) {
@@ -190,15 +191,60 @@ function httpGetJson(url: string): Promise<unknown> {
   });
 }
 
-export function writePortFile(port: number): string {
-  const dir = path.join(os.homedir(), ".dev-browser-panel");
+export function instanceDir(workspaceDir: string): string {
+  return path.join(workspaceDir, ".dev-browser-panel");
+}
+
+export function profileDir(workspaceDir: string): string {
+  return path.join(instanceDir(workspaceDir), "chromium-profile");
+}
+
+export function writeInstancePortFile(workspaceDir: string, port: number): string {
+  const dir = instanceDir(workspaceDir);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   const portFile = path.join(dir, "port");
   fs.writeFileSync(portFile, String(port), "utf8");
   return portFile;
 }
 
-export function removePortFile(): void {
-  const portFile = path.join(os.homedir(), ".dev-browser-panel", "port");
+export function writeGlobalPortFile(port: number, workspaceDir: string): string {
+  const dir = path.join(os.homedir(), ".dev-browser-panel");
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, "port"), String(port), "utf8");
+  fs.writeFileSync(path.join(dir, "last-workspace"), workspaceDir, "utf8");
+  return path.join(dir, "port");
+}
+
+export function removeInstancePortFile(workspaceDir: string): void {
+  const portFile = path.join(instanceDir(workspaceDir), "port");
   try { fs.unlinkSync(portFile); } catch { /* ignore */ }
+}
+
+export function removeGlobalPortFileIfMatches(port: number): void {
+  const portFile = path.join(os.homedir(), ".dev-browser-panel", "port");
+  try {
+    const current = fs.readFileSync(portFile, "utf8").trim();
+    if (current === String(port)) fs.unlinkSync(portFile);
+  } catch { /* ignore */ }
+}
+
+export function isPortFree(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const server = net.createServer();
+    server.once("error", () => resolve(false));
+    server.once("listening", () => {
+      server.close(() => resolve(true));
+    });
+    server.listen(port, "127.0.0.1");
+  });
+}
+
+export async function findFreePort(start: number, maxAttempts: number = 50): Promise<number> {
+  for (let i = 0; i < maxAttempts; i++) {
+    const candidate = start + i;
+    if (await isPortFree(candidate)) return candidate;
+  }
+  throw new Error(
+    `No free CDP port in range ${start}-${start + maxAttempts - 1}. Stop other panels or change devBrowserPanel.cdpPort.`,
+  );
 }

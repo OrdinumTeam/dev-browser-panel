@@ -1,4 +1,6 @@
 import * as vscode from "vscode";
+import * as os from "os";
+import * as path from "path";
 import { Session } from "./session";
 import { ViewerPanel } from "./viewer";
 import { LogsPanel } from "./logs";
@@ -8,6 +10,12 @@ let session: Session | null = null;
 let autoreload: Autoreload | null = null;
 let statusItem: vscode.StatusBarItem;
 let logsProvider: LogsPanel;
+
+function getWorkspaceDir(): string {
+  const folders = vscode.workspace.workspaceFolders;
+  if (folders && folders.length > 0) return folders[0].uri.fsPath;
+  return path.join(os.tmpdir(), `dev-browser-panel-${process.pid}`);
+}
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   statusItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 0);
@@ -26,17 +34,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   async function ensureSession(): Promise<Session | null> {
     if (session) return session;
     const cfg = vscode.workspace.getConfiguration("devBrowserPanel");
-    const port = cfg.get<number>("cdpPort", 9333);
+    const startPort = cfg.get<number>("cdpPort", 9333);
     const newSession = new Session({
-      port,
+      port: startPort,
       startUrl: cfg.get<string>("startUrl", "about:blank"),
       viewport: cfg.get("viewport", { width: 1280, height: 800 }),
       chromiumPath: cfg.get<string>("chromiumPath") || undefined,
+      workspaceDir: getWorkspaceDir(),
     });
     try {
       await newSession.start();
       session = newSession;
-      statusItem.text = `$(globe) Browser :${port}`;
+      statusItem.text = `$(globe) Browser :${newSession.allocatedPort}`;
       session.once("stopped", () => {
         statusItem.text = "$(globe) Browser OFF";
         session = null;
