@@ -217,17 +217,21 @@
     const kc = keyCode(e.key);
     const isPrintable = e.key.length === 1 && !e.ctrlKey && !e.metaKey;
 
+    // Puppeteer/Playwright pattern:
+    //   - printable: rawKeyDown (no text) + char (inserts the text)
+    //   - non-printable (Enter, Tab, arrows, etc): just keyDown
+    // Sending keyDown WITH text AND a char event causes Chromium to insert
+    // the character twice ("aa" instead of "a"), since keyDown with non-empty
+    // text already synthesizes a char event internally.
     vscode.postMessage({
       type: 'key',
       event: {
-        type: 'keyDown',
+        type: isPrintable ? 'rawKeyDown' : 'keyDown',
         key: e.key,
         code: e.code,
         keyCode: kc,
         modifiers,
         autoRepeat: e.repeat,
-        text: isPrintable ? e.key : '',
-        unmodifiedText: isPrintable ? e.key : '',
       },
     });
 

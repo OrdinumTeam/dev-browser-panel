@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.2.1] - 2026-05-21
+
+### Fixed
+- **Double-typing bug** in the browser viewer: characters typed into focused
+  inputs (URL bar, forms, etc.) were duplicated (`aa` instead of `a`). Caused
+  by `Input.dispatchKeyEvent` sending both a `keyDown` with non-empty `text`
+  AND a follow-up `char` event — Chromium synthesizes the char internally
+  from `keyDown` with text, so the explicit `char` event was a redundant
+  insert. Now uses the canonical Puppeteer/Playwright pattern: `rawKeyDown`
+  (no text) + `char` for printable keys, `keyDown` only for non-printable.
+
 ## [0.2.0] - 2026-05-21
 
 ### Added
