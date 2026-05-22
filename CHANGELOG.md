@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.2] - 2026-05-21
+
+### Fixed
+- **Blurry viewer rendering** on Retina/HiDPI displays. Three changes combined:
+  1. JPEG quality bumped from 70 → 90 (less compression artifacts on text).
+  2. Canvas backing store now matches `devicePixelRatio` instead of CSS pixels — on Retina (DPR=2), a 1280×800 canvas now has a 2560×1600 backing store, displayed 1:1 with no upscale.
+  3. `Emulation.setDeviceMetricsOverride` now passes the real DPR (was hard-coded to 1), so Chromium renders the page at the same resolution the canvas can display. Screencast restarts with matching `maxWidth`/`maxHeight` when the viewport changes by more than 50px.
+
 ## [0.2.1] - 2026-05-21
 
 ### Fixed

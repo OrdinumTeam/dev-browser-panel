@@ -2,7 +2,7 @@
   "name": "dev-browser-panel",
   "displayName": "Dev Browser Panel",
   "description": "Embedded Chromium inside VS Code, controllable via CDP. Built so AI agents (Claude Code, dev-browser CLI, etc.) can drive a browser the user sees inside the editor. Includes logs panel, multi-tab, and autoreload.",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "publisher": "ordinum-team",
   "license": "MIT",
   "repository": {

@@ -14,6 +14,11 @@ export class ViewerPanel {
   private currentTargetId: string | null = null;
   private currentSessionId: string | null = null;
   private disposables: vscode.Disposable[] = [];
+  private lastViewportWidth: number = 0;
+  private lastViewportHeight: number = 0;
+  private lastDpr: number = 1;
+  private lastScreencastMaxW: number = 0;
+  private lastScreencastMaxH: number = 0;
 
   static getInstance(): ViewerPanel | null {
     return ViewerPanel.instance;
@@ -116,9 +121,18 @@ export class ViewerPanel {
 
     try {
       await cdp.send("Page.enable", {}, target.sessionId);
+      const dpr = this.lastDpr || 1;
+      const w = this.lastViewportWidth || 1280;
+      const h = this.lastViewportHeight || 800;
       await cdp.send(
         "Page.startScreencast",
-        { format: "jpeg", quality: 70, everyNthFrame: 1 },
+        {
+          format: "jpeg",
+          quality: 90,
+          everyNthFrame: 1,
+          maxWidth: Math.round(w * dpr),
+          maxHeight: Math.round(h * dpr),
+        },
         target.sessionId,
       );
     } catch { /* ignore */ }
@@ -179,16 +193,43 @@ export class ViewerPanel {
         }
         case "viewport": {
           if (!sid) return;
+          const w = msg.width as number;
+          const h = msg.height as number;
+          const dpr = Math.max(1, Math.min(3, (msg.dpr as number) || 1));
+          this.lastViewportWidth = w;
+          this.lastViewportHeight = h;
+          this.lastDpr = dpr;
           await cdp.send(
             "Emulation.setDeviceMetricsOverride",
-            {
-              width: msg.width as number,
-              height: msg.height as number,
-              deviceScaleFactor: 1,
-              mobile: false,
-            },
+            { width: w, height: h, deviceScaleFactor: dpr, mobile: false },
             sid,
           );
+          // Restart screencast with proper maxWidth/Height so we get
+          // full-resolution DPR-aware frames. Threshold avoids restarting
+          // 60x/sec during a drag-resize.
+          const newMaxW = Math.round(w * dpr);
+          const newMaxH = Math.round(h * dpr);
+          if (
+            Math.abs(newMaxW - this.lastScreencastMaxW) > 50 ||
+            Math.abs(newMaxH - this.lastScreencastMaxH) > 50
+          ) {
+            this.lastScreencastMaxW = newMaxW;
+            this.lastScreencastMaxH = newMaxH;
+            try {
+              await cdp.send("Page.stopScreencast", {}, sid);
+              await cdp.send(
+                "Page.startScreencast",
+                {
+                  format: "jpeg",
+                  quality: 90,
+                  everyNthFrame: 1,
+                  maxWidth: newMaxW,
+                  maxHeight: newMaxH,
+                },
+                sid,
+              );
+            } catch { /* ignore */ }
+          }
           break;
         }
         case "back": {

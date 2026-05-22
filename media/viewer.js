@@ -16,14 +16,27 @@
   let browserH = 800;
   let lastMoveTime = 0;
 
-  // ---- Initialize canvas size ----
+  function dpr() {
+    return Math.max(1, Math.min(3, window.devicePixelRatio || 1));
+  }
+
+  // ---- Initialize canvas size (DPR-aware for crisp rendering on Retina) ----
+  function sizeCanvas(cssW, cssH) {
+    const r = dpr();
+    canvas.width = Math.round(cssW * r);
+    canvas.height = Math.round(cssH * r);
+    canvas.style.width = cssW + 'px';
+    canvas.style.height = cssH + 'px';
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.fillStyle = '#1e1e1e';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+  }
+
   function initCanvas() {
     const w = canvas.clientWidth || 1280;
     const h = canvas.clientHeight || 800;
-    canvas.width = w;
-    canvas.height = h;
-    ctx.fillStyle = '#1e1e1e';
-    ctx.fillRect(0, 0, w, h);
+    sizeCanvas(w, h);
   }
   initCanvas();
 
@@ -33,9 +46,8 @@
     const w = Math.floor(rect.width);
     const h = Math.floor(rect.height);
     if (w > 0 && h > 0) {
-      canvas.width = w;
-      canvas.height = h;
-      vscode.postMessage({ type: 'viewport', width: w, height: h });
+      sizeCanvas(w, h);
+      vscode.postMessage({ type: 'viewport', width: w, height: h, dpr: dpr() });
     }
   });
   ro.observe(canvas);
@@ -44,7 +56,12 @@
   setTimeout(() => {
     const rect = canvas.getBoundingClientRect();
     if (rect.width > 0 && rect.height > 0) {
-      vscode.postMessage({ type: 'viewport', width: Math.floor(rect.width), height: Math.floor(rect.height) });
+      vscode.postMessage({
+        type: 'viewport',
+        width: Math.floor(rect.width),
+        height: Math.floor(rect.height),
+        dpr: dpr(),
+      });
     }
   }, 150);
 
@@ -58,9 +75,11 @@
       img.onload = () => {
         browserW = img.naturalWidth || browserW;
         browserH = img.naturalHeight || browserH;
-        const dw = canvas.width;
-        const dh = canvas.height;
-        ctx.drawImage(img, 0, 0, dw, dh);
+        // canvas.width/height are already in device pixels (DPR-aware),
+        // and the frame is rendered at the same device pixels by Chromium
+        // (we set deviceScaleFactor = dpr on viewport message). So this
+        // draw is effectively 1:1 — no upscale, crisp text.
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
       };
       img.src = 'data:image/jpeg;base64,' + msg.data;
       return;
