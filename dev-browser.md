@@ -84,6 +84,69 @@ console.log("new tab:", tabId);
 '
 ```
 
+**Capturar screenshot** (útil pra mostrar evidência visual ao operador):
+```bash
+dev-browser --connect "http://localhost:$PORT" <<EOF > /tmp/screenshot.png.b64
+const p = await browser.getPage((await browser.listPages())[0].id);
+const { data } = await p.sendCommand("Page.captureScreenshot", {
+  format: "png",
+  captureBeyondViewport: false,  // true = full page (incl. abaixo do fold)
+});
+process.stdout.write(data);
+EOF
+base64 -d /tmp/screenshot.png.b64 > /tmp/screenshot.png && rm /tmp/screenshot.png.b64
+echo "Screenshot salvo em /tmp/screenshot.png"
+```
+
+**Salvar página como PDF**:
+```bash
+dev-browser --connect "http://localhost:$PORT" <<EOF > /tmp/page.pdf.b64
+const p = await browser.getPage((await browser.listPages())[0].id);
+const { data } = await p.sendCommand("Page.printToPDF", {
+  printBackground: true,
+  format: "A4",
+});
+process.stdout.write(data);
+EOF
+base64 -d /tmp/page.pdf.b64 > /tmp/page.pdf && rm /tmp/page.pdf.b64
+```
+
+**Ler cookies** (útil pra debug de auth):
+```bash
+dev-browser --connect "http://localhost:$PORT" <<< '
+const p = await browser.getPage((await browser.listPages())[0].id);
+const { cookies } = await p.sendCommand("Network.getAllCookies");
+// filtra por domain se quiser:
+const filtered = cookies.filter(c => c.domain.includes("anthropic.com"));
+console.log(JSON.stringify(filtered.map(c => ({
+  name: c.name, value: c.value.slice(0, 20) + "...",
+  domain: c.domain, secure: c.secure, httpOnly: c.httpOnly
+})), null, 2));
+'
+```
+
+**Emular dispositivo móvel** (testar responsivo):
+```bash
+dev-browser --connect "http://localhost:$PORT" <<< '
+const p = await browser.getPage((await browser.listPages())[0].id);
+// iPhone 15 Pro
+await p.sendCommand("Emulation.setDeviceMetricsOverride", {
+  width: 393, height: 852, deviceScaleFactor: 3, mobile: true
+});
+await p.sendCommand("Emulation.setUserAgentOverride", {
+  userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
+});
+await p.sendCommand("Emulation.setTouchEmulationEnabled", { enabled: true });
+await p.goto("https://example.com");
+'
+# Pra resetar pra desktop: setDeviceMetricsOverride com mobile:false + clearDeviceMetricsOverride
+```
+
+**Pedir diagnóstico de render** (quando o operador reclamar de qualidade visual):
+> "Pode rodar `Cmd+Shift+P → Dev Browser Panel: Show Render Diagnostics` e me colar a tabela? Vou comparar `frame size` vs `canvas size` pra identificar se há mismatch."
+
+A tabela mostra DPR, canvas size (CSS + backing store), último frame size, deviceScaleFactor, format/quality, FPS. Se `frame size` ≠ `canvas backing store`, há um mismatch que causa upscale/borrado.
+
 ## Quando usar
 
 - ✅ Validar que uma mudança de UI funciona de verdade no browser
