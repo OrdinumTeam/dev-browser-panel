@@ -77,6 +77,24 @@ The fallback to `~/.dev-browser-panel/port` works because the extension writes a
 
 > Add `.dev-browser-panel/` to your project's `.gitignore` — it contains the Chromium profile and shouldn't be committed.
 
+### Teach the agent once via `dev-browser.md`
+
+This repo ships a ready-made guide at [`dev-browser.md`](./dev-browser.md) — drop it into your project's `CLAUDE.md` (or `AGENTS.md` for Codex) so the agent knows how to use the panel without you re-explaining each session.
+
+```bash
+SRC="/path/to/dev-browser-panel/dev-browser.md"
+
+# Append to the project's CLAUDE.md (Claude Code) — creates the file if it doesn't exist:
+cat "$SRC" >> /path/to/your/project/CLAUDE.md
+
+# Or for Codex CLI:
+cat "$SRC" >> /path/to/your/project/AGENTS.md
+```
+
+> The file is named `dev-browser.md` (not `CLAUDE.md`) on purpose: Claude Code only auto-reads `CLAUDE.md`, but you may already have one with project-specific instructions. Appending keeps both. If you don't have a `CLAUDE.md` yet, `cat >> CLAUDE.md` creates one.
+
+The content of `dev-browser.md` covers: discovering the port, driving via `dev-browser` CLI / Playwright / Puppeteer, common operations (DOM read, form fill, network capture, new tab), when to use vs. when not to, and how to prompt the operator if the panel is closed.
+
 ### Claude Code
 
 Uses its `Bash` tool — paste the snippet above. Or for a one-liner:
