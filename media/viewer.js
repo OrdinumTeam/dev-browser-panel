@@ -10,23 +10,49 @@
   const btnForward = document.getElementById('btn-forward');
   const btnReload = document.getElementById('btn-reload');
   const btnNewTab = document.getElementById('btn-newtab');
+  const btnScreenshot = document.getElementById('btn-screenshot');
+  const mobileIndicator = document.getElementById('mobile-indicator');
+  const loadingBar = document.getElementById('loading-bar');
+  const findBar = document.getElementById('find-bar');
+  const findInput = /** @type {HTMLInputElement} */ (document.getElementById('find-input'));
+  const findCount = document.getElementById('find-count');
+  const findPrev = document.getElementById('find-prev');
+  const findNextBtn = document.getElementById('find-next-btn');
+  const findCloseBtn = document.getElementById('find-close');
+  const contextMenu = document.getElementById('context-menu');
 
   // Browser viewport dimensions (what the CDP frame was rendered at)
   let browserW = 1280;
   let browserH = 800;
   let lastMoveTime = 0;
+  let currentSearchEngine = 'google';
+
+  // Feature 13d — frame mismatch detection
+  const _mismatchSeen = new Set();
+
+  // URL history (last 20)
+  const urlHistory = [];
+  const MAX_HISTORY = 20;
+
+  // Loading bar state
+  let loadingTimer = null;
+  let loadingProgress = 0;
 
   function dpr() {
     return Math.max(1, Math.min(3, window.devicePixelRatio || 1));
   }
 
   // ---- Initialize canvas size (DPR-aware for crisp rendering on Retina) ----
+  // IMPORTANT: do NOT set canvas.style.width/height inline. The CSS
+  // (width: 100%; height: 100% on #screen, flex: 1 on #viewport) is the
+  // single source of truth for DISPLAY size. We only set canvas.width/height
+  // (the backing-store size, in device pixels) for crisp 1:1 rendering with
+  // the screencast frames. Inline style would override the CSS and create
+  // a "frozen" smaller canvas when the panel is resized.
   function sizeCanvas(cssW, cssH) {
     const r = dpr();
     canvas.width = Math.round(cssW * r);
     canvas.height = Math.round(cssH * r);
-    canvas.style.width = cssW + 'px';
-    canvas.style.height = cssH + 'px';
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = 'high';
     ctx.fillStyle = '#1e1e1e';
@@ -65,6 +91,211 @@
     }
   }, 150);
 
+  // ---- Loading bar ----
+  function startLoading() {
+    if (loadingTimer) clearInterval(loadingTimer);
+    loadingProgress = 0;
+    loadingBar.style.transition = 'none';
+    loadingBar.style.width = '0%';
+    loadingBar.style.opacity = '1';
+    // Animate 0 → 90% gradually
+    loadingTimer = setInterval(() => {
+      loadingProgress = Math.min(90, loadingProgress + (90 - loadingProgress) * 0.1 + 1);
+      loadingBar.style.transition = 'width 0.2s ease';
+      loadingBar.style.width = loadingProgress + '%';
+      if (loadingProgress >= 90) {
+        clearInterval(loadingTimer);
+        loadingTimer = null;
+      }
+    }, 200);
+  }
+
+  function stopLoading() {
+    if (loadingTimer) { clearInterval(loadingTimer); loadingTimer = null; }
+    loadingBar.style.transition = 'width 0.2s ease';
+    loadingBar.style.width = '100%';
+    setTimeout(() => {
+      loadingBar.style.transition = 'opacity 0.3s ease';
+      loadingBar.style.opacity = '0';
+      setTimeout(() => { loadingBar.style.width = '0%'; }, 350);
+    }, 200);
+  }
+
+  // ---- Find bar ----
+  function showFindBar(active) {
+    if (active) {
+      findBar.style.display = 'flex';
+      findInput.focus();
+      findInput.select();
+    } else {
+      findBar.style.display = 'none';
+      findCount.textContent = '';
+      vscode.postMessage({ type: 'find-close' });
+      canvas.focus();
+    }
+  }
+
+  if (findInput) {
+    findInput.addEventListener('input', () => {
+      const q = findInput.value;
+      if (q) {
+        vscode.postMessage({ type: 'find', query: q });
+      }
+    });
+
+    findInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        vscode.postMessage({ type: 'find-next', query: findInput.value, backward: e.shiftKey });
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        showFindBar(false);
+      }
+    });
+  }
+
+  if (findPrev) {
+    findPrev.addEventListener('click', () => {
+      vscode.postMessage({ type: 'find-next', query: findInput.value, backward: true });
+    });
+  }
+
+  if (findNextBtn) {
+    findNextBtn.addEventListener('click', () => {
+      vscode.postMessage({ type: 'find-next', query: findInput.value, backward: false });
+    });
+  }
+
+  if (findCloseBtn) {
+    findCloseBtn.addEventListener('click', () => showFindBar(false));
+  }
+
+  // ---- Context menu ----
+  function hideContextMenu() {
+    if (contextMenu) {
+      contextMenu.style.display = 'none';
+      contextMenu.innerHTML = '';
+    }
+  }
+
+  function showContextMenu(x, y, items) {
+    if (!contextMenu) return;
+    contextMenu.innerHTML = '';
+    contextMenu.style.display = 'block';
+    // Position near click, but keep inside viewport
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    let left = x;
+    let top = y;
+    contextMenu.style.left = left + 'px';
+    contextMenu.style.top = top + 'px';
+
+    for (const item of items) {
+      if (item.separator) {
+        const sep = document.createElement('div');
+        sep.className = 'ctx-separator';
+        contextMenu.appendChild(sep);
+        continue;
+      }
+      const el = document.createElement('div');
+      el.className = 'ctx-item';
+      el.textContent = item.label;
+      if (item.disabled) el.classList.add('ctx-disabled');
+      else {
+        el.addEventListener('click', () => {
+          hideContextMenu();
+          if (item.action) item.action();
+        });
+      }
+      contextMenu.appendChild(el);
+    }
+
+    // Adjust position if overflows
+    requestAnimationFrame(() => {
+      const rect = contextMenu.getBoundingClientRect();
+      if (rect.right > vw) {
+        left = Math.max(0, x - rect.width);
+        contextMenu.style.left = left + 'px';
+      }
+      if (rect.bottom > vh) {
+        top = Math.max(0, y - rect.height);
+        contextMenu.style.top = top + 'px';
+      }
+    });
+  }
+
+  document.addEventListener('click', () => hideContextMenu());
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') hideContextMenu(); });
+
+  // ---- Smart address bar ----
+  const ENGINE_URLS = {
+    google: 'https://www.google.com/search?q=',
+    duckduckgo: 'https://duckduckgo.com/?q=',
+    bing: 'https://www.bing.com/search?q=',
+  };
+
+  function looksLikeUrl(s) {
+    if (/^[a-zA-Z][a-zA-Z\d+\-.]*:/.test(s)) return true; // has scheme
+    if (/\s/.test(s)) return false; // has space → query
+    if (/\.(com|io|net|org|dev|edu|gov|co|app|ai|xyz|me|info)(\/|$)/i.test(s)) return true;
+    return false;
+  }
+
+  function navigateToInput(rawValue) {
+    let url = rawValue.trim();
+    if (!url) return;
+    if (looksLikeUrl(url)) {
+      if (!/^[a-zA-Z][a-zA-Z\d+\-.]*:/.test(url)) url = 'https://' + url;
+    } else {
+      const engine = currentSearchEngine || 'google';
+      url = (ENGINE_URLS[engine] || ENGINE_URLS.google) + encodeURIComponent(url);
+    }
+    vscode.postMessage({ type: 'navigate', url });
+    addToUrlHistory(rawValue.trim());
+  }
+
+  function addToUrlHistory(entry) {
+    const idx = urlHistory.indexOf(entry);
+    if (idx !== -1) urlHistory.splice(idx, 1);
+    urlHistory.unshift(entry);
+    if (urlHistory.length > MAX_HISTORY) urlHistory.pop();
+    updateDatalist();
+  }
+
+  function updateDatalist() {
+    let dl = document.getElementById('url-history-list');
+    if (!dl) {
+      dl = document.createElement('datalist');
+      dl.id = 'url-history-list';
+      document.body.appendChild(dl);
+      urlbar.setAttribute('list', 'url-history-list');
+    }
+    dl.innerHTML = '';
+    for (const h of urlHistory) {
+      const opt = document.createElement('option');
+      opt.value = h;
+      dl.appendChild(opt);
+    }
+  }
+
+  urlbar.placeholder = 'Search or type URL';
+
+  urlbar.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter') return;
+    navigateToInput(urlbar.value);
+  });
+
+  btnBack.addEventListener('click', () => vscode.postMessage({ type: 'back' }));
+  btnForward.addEventListener('click', () => vscode.postMessage({ type: 'forward' }));
+  btnReload.addEventListener('click', () => vscode.postMessage({ type: 'reload' }));
+  btnNewTab.addEventListener('click', () => vscode.postMessage({ type: 'new-tab', url: 'about:blank' }));
+
+  if (btnScreenshot) {
+    btnScreenshot.addEventListener('click', () => {
+      vscode.postMessage({ type: 'command', command: 'devBrowserPanel.takeScreenshot' });
+    });
+  }
+
   // ---- Message handler ----
   window.addEventListener('message', (e) => {
     const msg = e.data;
@@ -75,6 +306,14 @@
       img.onload = () => {
         browserW = img.naturalWidth || browserW;
         browserH = img.naturalHeight || browserH;
+        // Feature 13d — frame mismatch detection
+        if (img.naturalWidth !== canvas.width || img.naturalHeight !== canvas.height) {
+          const key = `${img.naturalWidth}x${img.naturalHeight}_${canvas.width}x${canvas.height}`;
+          if (!_mismatchSeen.has(key)) {
+            _mismatchSeen.add(key);
+            console.warn(`[dev-browser-panel] frame ${img.naturalWidth}x${img.naturalHeight} ≠ canvas ${canvas.width}x${canvas.height} — degraded quality`);
+          }
+        }
         // canvas.width/height are already in device pixels (DPR-aware),
         // and the frame is rendered at the same device pixels by Chromium
         // (we set deviceScaleFactor = dpr on viewport message). So this
@@ -96,7 +335,78 @@
       document.title = msg.title ? String(msg.title) + ' — Browser' : 'Browser';
       return;
     }
+
+    if (msg.type === 'loading-start') {
+      startLoading();
+      return;
+    }
+
+    if (msg.type === 'loading-stop') {
+      stopLoading();
+      return;
+    }
+
+    if (msg.type === 'show-find') {
+      showFindBar(!!msg.active);
+      return;
+    }
+
+    if (msg.type === 'mobile-preset') {
+      if (mobileIndicator) {
+        if (msg.name && msg.name !== 'Desktop') {
+          mobileIndicator.textContent = '📱';
+          mobileIndicator.title = 'Mobile emulation: ' + msg.name;
+          mobileIndicator.style.display = '';
+        } else {
+          mobileIndicator.style.display = 'none';
+        }
+      }
+      return;
+    }
+
+    if (msg.type === 'context-hit-result') {
+      const rect = canvas.getBoundingClientRect();
+      // We stored the hit test position in a closure below
+      buildContextMenu(msg.link, msg.imgSrc, _pendingContextX, _pendingContextY);
+      return;
+    }
+
+    if (msg.type === 'search-engine') {
+      currentSearchEngine = msg.engine || 'google';
+      return;
+    }
   });
+
+  // Pending context menu position (set on right-click, used when hit-test result arrives)
+  let _pendingContextX = 0;
+  let _pendingContextY = 0;
+
+  function buildContextMenu(link, imgSrc, pageX, pageY) {
+    const items = [];
+
+    items.push({ label: 'Back', action: () => vscode.postMessage({ type: 'back' }) });
+    items.push({ label: 'Forward', action: () => vscode.postMessage({ type: 'forward' }) });
+    items.push({ label: 'Reload', action: () => vscode.postMessage({ type: 'reload' }) });
+    items.push({ separator: true });
+
+    if (link) {
+      items.push({ label: 'Open Link: ' + link.slice(0, 40), action: () => vscode.postMessage({ type: 'navigate', url: link }) });
+      items.push({ label: 'Copy Link', action: () => navigator.clipboard.writeText(link).catch(() => undefined) });
+    }
+
+    if (imgSrc) {
+      items.push({ label: 'Copy Image URL', action: () => navigator.clipboard.writeText(imgSrc).catch(() => undefined) });
+    }
+
+    items.push({ separator: true });
+    items.push({ label: 'Copy', action: () => vscode.postMessage({ type: 'copy-request' }) });
+    items.push({ label: 'Paste', action: () => vscode.postMessage({ type: 'paste-request' }) });
+    items.push({ separator: true });
+    items.push({ label: 'View Source', action: () => vscode.postMessage({ type: 'command', command: 'devBrowserPanel.viewSource' }) });
+    items.push({ label: 'Inspect Element', action: () => vscode.postMessage({ type: 'command', command: 'devBrowserPanel.inspectElement' }) });
+
+    showContextMenu(pageX, pageY, items);
+  }
 
   // ---- Tab strip ----
   function renderTabs(tabList, activeTargetId) {
@@ -112,7 +422,7 @@
 
       const closeBtn = document.createElement('span');
       closeBtn.className = 'close-btn';
-      closeBtn.textContent = '×'; // ×
+      closeBtn.textContent = '\xD7'; // ×
       closeBtn.addEventListener('click', (ev) => {
         ev.stopPropagation();
         vscode.postMessage({ type: 'close-tab', targetId: tab.targetId });
@@ -126,23 +436,6 @@
       tabsEl.appendChild(el);
     }
   }
-
-  // ---- Toolbar ----
-  urlbar.addEventListener('keydown', (e) => {
-    if (e.key !== 'Enter') return;
-    let url = urlbar.value.trim();
-    if (!url) return;
-    // Auto-prepend https:// if no scheme
-    if (!/^[a-zA-Z][a-zA-Z\d+\-.]*:/.test(url)) {
-      url = 'https://' + url;
-    }
-    vscode.postMessage({ type: 'navigate', url });
-  });
-
-  btnBack.addEventListener('click', () => vscode.postMessage({ type: 'back' }));
-  btnForward.addEventListener('click', () => vscode.postMessage({ type: 'forward' }));
-  btnReload.addEventListener('click', () => vscode.postMessage({ type: 'reload' }));
-  btnNewTab.addEventListener('click', () => vscode.postMessage({ type: 'new-tab', url: 'about:blank' }));
 
   // ---- Mouse input helpers ----
   function getModifiers(e) {
@@ -213,7 +506,18 @@
     });
   }, { passive: false });
 
-  canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+  canvas.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    hideContextMenu();
+    const rect = canvas.getBoundingClientRect();
+    _pendingContextX = e.clientX - rect.left + rect.left;
+    _pendingContextY = e.clientY - rect.top + rect.top;
+    const { x, y } = toCanvasCoords(e);
+    // Store absolute page coordinates for the menu
+    _pendingContextX = e.clientX;
+    _pendingContextY = e.clientY;
+    vscode.postMessage({ type: 'context-hit-test', x, y });
+  });
 
   // ---- Keyboard input ----
   const KEY_CODES = {
@@ -236,6 +540,22 @@
     const modifiers = getModifiers(e);
     const kc = keyCode(e.key);
     const isPrintable = e.key.length === 1 && !e.ctrlKey && !e.metaKey;
+
+    // Feature 12 — Copy/paste interception
+    if ((e.metaKey || e.ctrlKey) && e.key === 'c') {
+      vscode.postMessage({ type: 'copy-request' });
+      return;
+    }
+    if ((e.metaKey || e.ctrlKey) && e.key === 'v') {
+      vscode.postMessage({ type: 'paste-request' });
+      return;
+    }
+
+    // Feature 1 — Find in page (Cmd+F / Ctrl+F)
+    if ((e.metaKey || e.ctrlKey) && e.key === 'f') {
+      showFindBar(true);
+      return;
+    }
 
     // Puppeteer/Playwright pattern:
     //   - printable: rawKeyDown (no text) + char (inserts the text)

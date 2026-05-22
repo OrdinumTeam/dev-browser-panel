@@ -1,0 +1,57 @@
+* { box-sizing: border-box; }
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--vscode-editor-background);
+  color: var(--vscode-editor-foreground);
+  font-family: var(--vscode-font-family);
+  font-size: 13px;
+}
+
+h2 {
+  margin: 12px 16px 8px;
+  font-size: 15px;
+}
+
+#toolbar {
+  padding: 0 16px 12px;
+}
+
+#toolbar button {
+  background: var(--vscode-button-secondaryBackground);
+  color: var(--vscode-button-secondaryForeground);
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 3px;
+  padding: 4px 12px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+#toolbar button:hover {
+  background: var(--vscode-button-secondaryHoverBackground);
+}
+
+#diag-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+#diag-table th, #diag-table td {
+  padding: 6px 16px;
+  text-align: left;
+  border-bottom: 1px solid var(--vscode-panel-border);
+}
+
+#diag-table th {
+  background: var(--vscode-editorWidget-background);
+  font-weight: 600;
+}
+
+#diag-table tbody tr:hover td {
+  background: var(--vscode-list-hoverBackground);
+}
+
+#diag-table td:last-child {
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 12px;
+}

@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.4.0] - 2026-05-22
+
+### Added
+- Find in page (Cmd+F / Ctrl+F) with match counter and navigation
+- Smart address bar: auto-detects URLs vs search queries, configurable search engine (`google`/`duckduckgo`/`bing`)
+- Loading progress bar (3 px) and smooth animation
+- Right-click context menu with Back/Forward/Reload/Copy/Paste/View source/Inspect
+- Download manager (`devBrowserPanel.showDownloads`) with notifications and downloads panel
+- Mobile emulation (`devBrowserPanel.toggleMobileEmulation`): Desktop / iPhone 15 Pro / iPad Pro / Galaxy S24 cycle with mobile indicator in toolbar
+- View source (`devBrowserPanel.viewSource`) — opens document HTML in VS Code editor tab
+- Take Screenshot (`devBrowserPanel.takeScreenshot`) — PNG, save dialog
+- Take Full Page Screenshot (`devBrowserPanel.takeFullPageScreenshot`) — captureBeyondViewport
+- Save as PDF (`devBrowserPanel.printToPDF`) — Page.printToPDF with background
+- Element inspector mode (`devBrowserPanel.inspectElement`) — Overlay.setInspectMode highlight
+- Storage editor (`devBrowserPanel.showStorage`) — Cookies, LocalStorage, SessionStorage tabs
+- System clipboard integration: Cmd+C copy, Cmd+V paste via CDP
+- Render diagnostics panel (`devBrowserPanel.showRenderDiagnostics`) — DPR, canvas size, frame size, format, mobile preset
+- `devBrowserPanel.autoOpenLogs` setting (default `false`) — opt-in logs auto-focus
+- `devBrowserPanel.searchEngine` setting — enum `google`/`duckduckgo`/`bing`
+- `devBrowserPanel.downloadPath` setting — custom download directory
+- `image-rendering: -webkit-optimize-contrast` on canvas for fractional-DPR sharpness
+- Frame size mismatch warning in browser console (deduplicated)
+- `Page.frameStartedLoading` / `Page.frameStoppedLoading` drive the loading bar in the webview
+
+### Fixed
+- `devBrowserPanel.open` no longer force-opens the Logs panel (requires `autoOpenLogs: true`)
+- Screencast now deferred until viewport dimensions are known (avoids initial wrong-resolution frame)
+
 ## [0.3.0] - 2026-05-21
 
 ### Added

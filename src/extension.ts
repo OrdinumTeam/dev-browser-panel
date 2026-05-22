@@ -4,12 +4,17 @@ import * as path from "path";
 import { Session } from "./session";
 import { ViewerPanel } from "./viewer";
 import { LogsPanel } from "./logs";
+import { DownloadsPanel } from "./downloads";
+import { StoragePanel } from "./storage";
+import { DiagnosticsPanel } from "./diagnostics";
 import { Autoreload } from "./autoreload";
 
 let session: Session | null = null;
 let autoreload: Autoreload | null = null;
 let statusItem: vscode.StatusBarItem;
 let logsProvider: LogsPanel;
+let downloadsProvider: DownloadsPanel;
+let storageProvider: StoragePanel;
 
 function getWorkspaceDir(): string {
   const folders = vscode.workspace.workspaceFolders;
@@ -27,6 +32,20 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   logsProvider = new LogsPanel(context);
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider("devBrowserPanel.logsView", logsProvider, {
+      webviewOptions: { retainContextWhenHidden: true },
+    }),
+  );
+
+  downloadsProvider = new DownloadsPanel(context);
+  context.subscriptions.push(
+    vscode.window.registerWebviewViewProvider("devBrowserPanel.downloadsView", downloadsProvider, {
+      webviewOptions: { retainContextWhenHidden: true },
+    }),
+  );
+
+  storageProvider = new StoragePanel(context);
+  context.subscriptions.push(
+    vscode.window.registerWebviewViewProvider("devBrowserPanel.storageView", storageProvider, {
       webviewOptions: { retainContextWhenHidden: true },
     }),
   );
@@ -52,6 +71,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         autoreload = null;
       });
       logsProvider.attachSession(session);
+      downloadsProvider.attachSession(session);
       return session;
     } catch (e) {
       vscode.window.showErrorMessage(`Dev Browser Panel: ${(e as Error).message}`);
@@ -64,7 +84,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       const s = await ensureSession();
       if (!s) return;
       ViewerPanel.create(context, s);
-      await vscode.commands.executeCommand("devBrowserPanel.logsView.focus");
+      const cfg = vscode.workspace.getConfiguration("devBrowserPanel");
+      if (cfg.get<boolean>("autoOpenLogs", false)) {
+        await vscode.commands.executeCommand("devBrowserPanel.logsView.focus");
+      }
       if (!autoreload) {
         autoreload = new Autoreload(context, s);
         autoreload.start();
@@ -112,6 +135,64 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         autoreload = null;
       }
       await session.stop();
+    }),
+
+    vscode.commands.registerCommand("devBrowserPanel.showDownloads", async () => {
+      await vscode.commands.executeCommand("devBrowserPanel.downloadsView.focus");
+    }),
+
+    vscode.commands.registerCommand("devBrowserPanel.takeScreenshot", async () => {
+      const v = ViewerPanel.getInstance();
+      if (!v) { vscode.window.showWarningMessage("Open Dev Browser Panel first."); return; }
+      await v.takeScreenshot(false);
+    }),
+
+    vscode.commands.registerCommand("devBrowserPanel.takeFullPageScreenshot", async () => {
+      const v = ViewerPanel.getInstance();
+      if (!v) { vscode.window.showWarningMessage("Open Dev Browser Panel first."); return; }
+      await v.takeScreenshot(true);
+    }),
+
+    vscode.commands.registerCommand("devBrowserPanel.printToPDF", async () => {
+      const v = ViewerPanel.getInstance();
+      if (!v) { vscode.window.showWarningMessage("Open Dev Browser Panel first."); return; }
+      await v.printToPDF();
+    }),
+
+    vscode.commands.registerCommand("devBrowserPanel.viewSource", async () => {
+      const v = ViewerPanel.getInstance();
+      if (!v) { vscode.window.showWarningMessage("Open Dev Browser Panel first."); return; }
+      await v.viewSource();
+    }),
+
+    vscode.commands.registerCommand("devBrowserPanel.toggleMobileEmulation", async () => {
+      const v = ViewerPanel.getInstance();
+      if (!v) { vscode.window.showWarningMessage("Open Dev Browser Panel first."); return; }
+      await v.toggleMobileEmulation();
+    }),
+
+    vscode.commands.registerCommand("devBrowserPanel.find", () => {
+      const v = ViewerPanel.getInstance();
+      if (!v) { vscode.window.showWarningMessage("Open Dev Browser Panel first."); return; }
+      v.triggerFind();
+    }),
+
+    vscode.commands.registerCommand("devBrowserPanel.inspectElement", async () => {
+      const v = ViewerPanel.getInstance();
+      if (!v) { vscode.window.showWarningMessage("Open Dev Browser Panel first."); return; }
+      await v.toggleInspectMode();
+    }),
+
+    vscode.commands.registerCommand("devBrowserPanel.showStorage", async () => {
+      const v = ViewerPanel.getInstance();
+      if (!v) { vscode.window.showWarningMessage("Open Dev Browser Panel first."); return; }
+      await v.refreshStorage(storageProvider);
+    }),
+
+    vscode.commands.registerCommand("devBrowserPanel.showRenderDiagnostics", () => {
+      const v = ViewerPanel.getInstance();
+      if (!v) { vscode.window.showWarningMessage("Open Dev Browser Panel first."); return; }
+      DiagnosticsPanel.show(context, v.getDiagnosticsData());
     }),
   );
 }

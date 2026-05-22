@@ -16,6 +16,31 @@ VS Code extension that embeds a Chromium browser inside the editor, controllable
 └────────────────────────────────────────────┘
 ```
 
+## What's new in v0.4.0
+
+13 features bringing the embedded browser closer to native Chrome:
+
+1. **Find in page** (Cmd+F / Ctrl+F) — overlay bar with match navigation (↑↓) and close (Esc)
+2. **Smart address bar** — auto-detects URLs vs. search queries; configurable search engine
+3. **Loading progress bar** — 3px animated bar + `$(sync~spin)` status during page loads
+4. **Right-click context menu** — Back / Forward / Reload / Copy link / Copy image / Copy / Paste / View source / Inspect
+5. **Download manager** (`Dev Browser Panel: Show Downloads`) — progress tracking, toast on complete, "Open Folder" action
+6. **Mobile emulation** (`Dev Browser Panel: Toggle Mobile Emulation`) — cycles Desktop → iPhone 15 Pro → iPad Pro → Galaxy S24
+7. **View source** (`Dev Browser Panel: View Source`) — opens document HTML in a VS Code editor tab
+8. **Screenshot** (`Dev Browser Panel: Take Screenshot` / `Take Full Page Screenshot`) — PNG with save dialog
+9. **Save as PDF** (`Dev Browser Panel: Save as PDF`) — Page.printToPDF with background
+10. **Element inspector** (`Dev Browser Panel: Inspect Element`) — CDP Overlay highlight mode with computed styles panel
+11. **Storage editor** (`Dev Browser Panel: Show Storage`) — Cookies, LocalStorage, SessionStorage tabs with delete/clear
+12. **Clipboard integration** — Cmd+C copies selection from Chromium; Cmd+V pastes from system clipboard
+13. **Render diagnostics** (`Dev Browser Panel: Show Render Diagnostics`) — DPR, canvas size, frame size, format, FPS table
+
+**Also fixed:**
+- `Dev Browser Panel: Open` no longer forces the Logs panel open — set `devBrowserPanel.autoOpenLogs: true` to restore old behaviour
+- Screencast now defers start until viewport dimensions are known (fixes initial wrong-resolution frames on Retina)
+- `image-rendering: -webkit-optimize-contrast` on the canvas for sharper rendering at fractional DPR
+
+---
+
 ## Features
 
 - **Embedded Chromium viewer** — CDP screencast streamed into a webview canvas
@@ -47,12 +72,22 @@ All available via `Cmd+Shift+P` (macOS) / `Ctrl+Shift+P` (Linux/Windows):
 
 | Command | What it does |
 |---|---|
-| `Dev Browser Panel: Open` | Start Chromium, open the viewer + logs panels |
+| `Dev Browser Panel: Open` | Start Chromium, open the viewer panel |
 | `Dev Browser Panel: New Tab` | Prompt for URL, open it in a new Chromium target |
 | `Dev Browser Panel: Reload Current Tab` | `Page.reload` on the active target |
 | `Dev Browser Panel: Toggle Autoreload` | Toggle file-watcher-driven reload on/off |
-| `Dev Browser Panel: Show Logs` | Reveal the Browser Logs panel (auto-opens with `Open`) |
+| `Dev Browser Panel: Show Logs` | Reveal the Browser Logs panel |
 | `Dev Browser Panel: Stop Chromium` | Kill the embedded Chromium and delete the port file |
+| `Dev Browser Panel: Find in Page` | Open find-in-page overlay (Cmd+F / Ctrl+F) |
+| `Dev Browser Panel: Toggle Mobile Emulation` | Cycle through Desktop / iPhone 15 Pro / iPad Pro / Galaxy S24 |
+| `Dev Browser Panel: View Source` | Open active tab's HTML source in VS Code editor |
+| `Dev Browser Panel: Take Screenshot` | Capture viewport as PNG (save dialog) |
+| `Dev Browser Panel: Take Full Page Screenshot` | Capture full page as PNG including below fold |
+| `Dev Browser Panel: Save as PDF` | Export active tab to PDF (save dialog) |
+| `Dev Browser Panel: Inspect Element` | Toggle CDP Overlay element inspector |
+| `Dev Browser Panel: Show Downloads` | Open downloads panel |
+| `Dev Browser Panel: Show Storage` | Open storage editor (Cookies / LocalStorage / SessionStorage) |
+| `Dev Browser Panel: Show Render Diagnostics` | Open render diagnostics table |
 
 The status bar (bottom-left) shows `$(globe) Browser :<port>` when running and `$(sync~spin) Autoreload` when active.
 
@@ -151,6 +186,9 @@ The `Host: localhost` header is required (CDP rejects `Host: 127.0.0.1` for DNS-
 | `devBrowserPanel.viewport` | `{width: 1280, height: 800}` | Initial viewport |
 | `devBrowserPanel.screencastFormat` | `"jpeg"` | Image format. `"jpeg"` = high FPS, slight compression. `"png"` = lossless, lower FPS (5-15 fps on heavy pages). |
 | `devBrowserPanel.screencastQuality` | `95` | JPEG quality 1-100 (ignored when format=`"png"`). `90` balanced, `95` near-lossless, `100` max. |
+| `devBrowserPanel.autoOpenLogs` | `false` | If `true`, automatically reveals the Logs panel when `Open` is called (old behaviour). |
+| `devBrowserPanel.searchEngine` | `"google"` | Search engine used by the smart address bar: `"google"` / `"duckduckgo"` / `"bing"`. |
+| `devBrowserPanel.downloadPath` | _(auto)_ | Directory for downloads. Blank = `<workspace>/.dev-browser-panel/downloads/`. |
 
 ## How it finds Chromium
 
@@ -216,6 +254,25 @@ dev-browser --connect "http://localhost:$(cat .dev-browser-panel/port 2>/dev/nul
 ### Network tab fica vazio
 
 Bodies de Image/Media/Font não são capturados (são binários e bloated). Tudo o resto sim. Se mesmo assim ficar vazio, faça `Stop Chromium` + `Open` — reconfigura `Network.enable` em todos os targets.
+
+### Screencast looks blurry / degraded quality
+
+The viewer renders Chromium's screencast frames onto a DPR-aware canvas. Here's what to try:
+
+**Choose the right format:**
+- **JPEG 95** (default) — near-lossless, high FPS. Good for 95% of cases.
+- **JPEG 100** — no perceptible artifact, ~5-10% lower FPS. Good for screenshot review or fine inspection.
+- **PNG** — lossless, FPS can drop to 10-15 on heavy pages. Use only when pixel-perfect fidelity matters.
+
+**If still blurry even with PNG:**
+Open `Dev Browser Panel: Show Render Diagnostics` and check whether `frame naturalWidth` matches `canvas backing-store width`. A mismatch (e.g. frame `2560×1600` vs canvas `1280×800`) means the screencast was started with wrong `maxWidth`/`maxHeight` — usually because the viewport message hadn't arrived yet. This is fixed in v0.4.0 (deferred screencast start), but if it happens reload the panel.
+
+A mismatch warning is also logged to the browser console (open DevTools on the webview: `Help → Toggle Developer Tools`):
+```
+[dev-browser-panel] frame 1280x800 ≠ canvas 2560x1600 — degraded quality
+```
+
+**Retina / high-DPI:** The extension detects `window.devicePixelRatio` and passes it to `Emulation.setDeviceMetricsOverride`. If your DPR is fractional (e.g. 1.5), the `image-rendering: -webkit-optimize-contrast` style on the canvas helps maintain sharpness.
 
 ### "Copied N entries" mas o HAR parece pequeno
 

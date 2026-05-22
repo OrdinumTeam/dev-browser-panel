@@ -2,7 +2,7 @@
   "name": "dev-browser-panel",
   "displayName": "Dev Browser Panel",
   "description": "Embedded Chromium inside VS Code, controllable via CDP. Built so AI agents (Claude Code, dev-browser CLI, etc.) can drive a browser the user sees inside the editor. Includes logs panel, multi-tab, and autoreload.",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "publisher": "ordinum-team",
   "license": "MIT",
   "repository": {
@@ -36,6 +36,11 @@
           "id": "dev-browser-logs",
           "title": "Browser Logs",
           "icon": "media/logs-icon.svg"
+        },
+        {
+          "id": "dev-browser-downloads",
+          "title": "Browser Downloads",
+          "icon": "media/logs-icon.svg"
         }
       ]
     },
@@ -45,6 +50,18 @@
           "type": "webview",
           "id": "devBrowserPanel.logsView",
           "name": "Browser Logs"
+        }
+      ],
+      "dev-browser-downloads": [
+        {
+          "type": "webview",
+          "id": "devBrowserPanel.downloadsView",
+          "name": "Browser Downloads"
+        },
+        {
+          "type": "webview",
+          "id": "devBrowserPanel.storageView",
+          "name": "Browser Storage"
         }
       ]
     },
@@ -77,6 +94,56 @@
       {
         "command": "devBrowserPanel.stopChromium",
         "title": "Dev Browser Panel: Stop Chromium",
+        "category": "Dev Browser Panel"
+      },
+      {
+        "command": "devBrowserPanel.showDownloads",
+        "title": "Dev Browser Panel: Show Downloads",
+        "category": "Dev Browser Panel"
+      },
+      {
+        "command": "devBrowserPanel.toggleMobileEmulation",
+        "title": "Dev Browser Panel: Toggle Mobile Emulation",
+        "category": "Dev Browser Panel"
+      },
+      {
+        "command": "devBrowserPanel.viewSource",
+        "title": "Dev Browser Panel: View Source",
+        "category": "Dev Browser Panel"
+      },
+      {
+        "command": "devBrowserPanel.takeScreenshot",
+        "title": "Dev Browser Panel: Take Screenshot",
+        "category": "Dev Browser Panel"
+      },
+      {
+        "command": "devBrowserPanel.takeFullPageScreenshot",
+        "title": "Dev Browser Panel: Take Full Page Screenshot",
+        "category": "Dev Browser Panel"
+      },
+      {
+        "command": "devBrowserPanel.printToPDF",
+        "title": "Dev Browser Panel: Save as PDF",
+        "category": "Dev Browser Panel"
+      },
+      {
+        "command": "devBrowserPanel.inspectElement",
+        "title": "Dev Browser Panel: Inspect Element",
+        "category": "Dev Browser Panel"
+      },
+      {
+        "command": "devBrowserPanel.showStorage",
+        "title": "Dev Browser Panel: Show Storage",
+        "category": "Dev Browser Panel"
+      },
+      {
+        "command": "devBrowserPanel.showRenderDiagnostics",
+        "title": "Dev Browser Panel: Show Render Diagnostics",
+        "category": "Dev Browser Panel"
+      },
+      {
+        "command": "devBrowserPanel.find",
+        "title": "Dev Browser Panel: Find in Page",
         "category": "Dev Browser Panel"
       }
     ],
@@ -125,6 +192,22 @@
           "minimum": 1,
           "maximum": 100,
           "description": "JPEG quality (1-100). Only applies when screencastFormat = 'jpeg'. 90 = balanced, 95 = near-lossless, 100 = max."
+        },
+        "devBrowserPanel.autoOpenLogs": {
+          "type": "boolean",
+          "default": false,
+          "description": "If true, automatically opens the Logs panel when the browser opens."
+        },
+        "devBrowserPanel.searchEngine": {
+          "type": "string",
+          "enum": ["google", "duckduckgo", "bing"],
+          "default": "google",
+          "description": "Search engine for the smart address bar."
+        },
+        "devBrowserPanel.downloadPath": {
+          "type": "string",
+          "default": "",
+          "description": "Directory for downloads. Leave blank to use <workspace>/.dev-browser-panel/downloads/."
         }
       }
     }

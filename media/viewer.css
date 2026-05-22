@@ -22,6 +22,7 @@ body {
   background: var(--vscode-editorWidget-background, var(--vscode-sideBar-background));
   border-bottom: 1px solid var(--vscode-panel-border);
   flex: 0 0 auto;
+  align-items: center;
 }
 
 #toolbar button {
@@ -53,6 +54,16 @@ body {
 #urlbar:focus {
   outline: 1px solid var(--vscode-focusBorder);
   outline-offset: -1px;
+}
+
+/* Loading bar */
+#loading-bar {
+  height: 3px;
+  width: 0%;
+  background: var(--vscode-progressBar-background, #007acc);
+  opacity: 0;
+  flex: 0 0 auto;
+  pointer-events: none;
 }
 
 #tabs {
@@ -113,4 +124,92 @@ body {
   height: 100%;
   outline: none;
   cursor: default;
+  image-rendering: -webkit-optimize-contrast;
+}
+
+/* Find bar */
+#find-bar {
+  position: absolute;
+  top: 4px;
+  right: 8px;
+  z-index: 100;
+  display: none;
+  background: var(--vscode-editorWidget-background);
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 3px;
+  padding: 4px 8px;
+  gap: 4px;
+  align-items: center;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+}
+
+#find-input {
+  width: 180px;
+  padding: 3px 6px;
+  background: var(--vscode-input-background);
+  color: var(--vscode-input-foreground);
+  border: 1px solid var(--vscode-input-border, var(--vscode-panel-border));
+  border-radius: 2px;
+  font-size: 12px;
+}
+
+#find-count {
+  font-size: 11px;
+  color: var(--vscode-descriptionForeground);
+  white-space: nowrap;
+  min-width: 40px;
+}
+
+#find-bar button {
+  background: transparent;
+  border: 1px solid var(--vscode-panel-border);
+  color: var(--vscode-button-secondaryForeground);
+  border-radius: 2px;
+  padding: 2px 6px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+#find-bar button:hover {
+  background: var(--vscode-button-secondaryHoverBackground);
+}
+
+/* Context menu */
+#context-menu {
+  position: fixed;
+  z-index: 200;
+  display: none;
+  background: var(--vscode-menu-background, var(--vscode-editorWidget-background));
+  border: 1px solid var(--vscode-menu-border, var(--vscode-panel-border));
+  border-radius: 4px;
+  padding: 4px 0;
+  min-width: 160px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+  font-size: 13px;
+}
+
+.ctx-item {
+  padding: 5px 16px;
+  cursor: pointer;
+  color: var(--vscode-menu-foreground, var(--vscode-foreground));
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 280px;
+}
+
+.ctx-item:hover {
+  background: var(--vscode-menu-selectionBackground, var(--vscode-list-activeSelectionBackground));
+  color: var(--vscode-menu-selectionForeground, var(--vscode-list-activeSelectionForeground));
+}
+
+.ctx-item.ctx-disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.ctx-separator {
+  height: 1px;
+  background: var(--vscode-menu-separatorBackground, var(--vscode-panel-border));
+  margin: 4px 0;
 }
