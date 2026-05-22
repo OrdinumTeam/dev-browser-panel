@@ -81,7 +81,8 @@
         // draw is effectively 1:1 — no upscale, crisp text.
         ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
       };
-      img.src = 'data:image/jpeg;base64,' + msg.data;
+      const mime = msg.format === 'png' ? 'image/png' : 'image/jpeg';
+      img.src = 'data:' + mime + ';base64,' + msg.data;
       return;
     }
 

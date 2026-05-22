@@ -149,6 +149,8 @@ The `Host: localhost` header is required (CDP rejects `Host: 127.0.0.1` for DNS-
 | `devBrowserPanel.autoreloadDebounceMs` | `350` | Debounce window for autoreload |
 | `devBrowserPanel.chromiumPath` | _(auto)_ | Override path to Chromium binary |
 | `devBrowserPanel.viewport` | `{width: 1280, height: 800}` | Initial viewport |
+| `devBrowserPanel.screencastFormat` | `"jpeg"` | Image format. `"jpeg"` = high FPS, slight compression. `"png"` = lossless, lower FPS (5-15 fps on heavy pages). |
+| `devBrowserPanel.screencastQuality` | `95` | JPEG quality 1-100 (ignored when format=`"png"`). `90` balanced, `95` near-lossless, `100` max. |
 
 ## How it finds Chromium
 

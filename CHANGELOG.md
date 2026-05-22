@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.3.0] - 2026-05-21
+
+### Added
+- **`devBrowserPanel.screencastFormat`** setting — `"jpeg"` (default, fast) or `"png"` (lossless, slower). PNG gives pixel-perfect rendering at the cost of FPS (5-15 fps on heavy pages versus 30-60 fps with JPEG).
+- **`devBrowserPanel.screencastQuality`** setting — JPEG quality 1-100, default raised to `95` (was hard-coded `90`). Set to `100` for max-quality JPEG, or use `"png"` for true lossless.
+
+### Changed
+- Default JPEG quality bumped from `90` to `95` — near-lossless to the eye, marginal FPS impact.
+- Frame payload now carries the format mime so the webview decodes correctly regardless of jpeg/png choice.
+
 ## [0.2.2] - 2026-05-21
 
 ### Fixed

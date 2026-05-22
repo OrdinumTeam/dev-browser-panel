@@ -19,6 +19,7 @@ export class ViewerPanel {
   private lastDpr: number = 1;
   private lastScreencastMaxW: number = 0;
   private lastScreencastMaxH: number = 0;
+  private currentScreencastFormat: "jpeg" | "png" = "jpeg";
 
   static getInstance(): ViewerPanel | null {
     return ViewerPanel.instance;
@@ -86,7 +87,11 @@ export class ViewerPanel {
       const onFrame = (ev: CDPEvent): void => {
         if (ev.sessionId !== this.currentSessionId) return;
         const params = ev.params as { data: string; sessionId?: number };
-        this.panel.webview.postMessage({ type: "frame", data: params.data });
+        this.panel.webview.postMessage({
+          type: "frame",
+          data: params.data,
+          format: this.currentScreencastFormat,
+        });
         if (cdp.isConnected() && this.currentSessionId && typeof params.sessionId === "number") {
           cdp
             .send("Page.screencastFrameAck", { sessionId: params.sessionId }, this.currentSessionId)
@@ -124,17 +129,18 @@ export class ViewerPanel {
       const dpr = this.lastDpr || 1;
       const w = this.lastViewportWidth || 1280;
       const h = this.lastViewportHeight || 800;
-      await cdp.send(
-        "Page.startScreencast",
-        {
-          format: "jpeg",
-          quality: 90,
-          everyNthFrame: 1,
-          maxWidth: Math.round(w * dpr),
-          maxHeight: Math.round(h * dpr),
-        },
-        target.sessionId,
-      );
+      const cfg = vscode.workspace.getConfiguration("devBrowserPanel");
+      const format: "jpeg" | "png" = cfg.get<string>("screencastFormat", "jpeg") === "png" ? "png" : "jpeg";
+      this.currentScreencastFormat = format;
+      const quality = Math.max(1, Math.min(100, cfg.get<number>("screencastQuality", 95)));
+      const params: Record<string, unknown> = {
+        format,
+        everyNthFrame: 1,
+        maxWidth: Math.round(w * dpr),
+        maxHeight: Math.round(h * dpr),
+      };
+      if (format === "jpeg") params.quality = quality;
+      await cdp.send("Page.startScreencast", params, target.sessionId);
     } catch { /* ignore */ }
 
     this.panel.webview.postMessage({
@@ -215,19 +221,20 @@ export class ViewerPanel {
           ) {
             this.lastScreencastMaxW = newMaxW;
             this.lastScreencastMaxH = newMaxH;
+            const cfg = vscode.workspace.getConfiguration("devBrowserPanel");
+            const format: "jpeg" | "png" = cfg.get<string>("screencastFormat", "jpeg") === "png" ? "png" : "jpeg";
+      this.currentScreencastFormat = format;
+            const quality = Math.max(1, Math.min(100, cfg.get<number>("screencastQuality", 95)));
+            const params: Record<string, unknown> = {
+              format,
+              everyNthFrame: 1,
+              maxWidth: newMaxW,
+              maxHeight: newMaxH,
+            };
+            if (format === "jpeg") params.quality = quality;
             try {
               await cdp.send("Page.stopScreencast", {}, sid);
-              await cdp.send(
-                "Page.startScreencast",
-                {
-                  format: "jpeg",
-                  quality: 90,
-                  everyNthFrame: 1,
-                  maxWidth: newMaxW,
-                  maxHeight: newMaxH,
-                },
-                sid,
-              );
+              await cdp.send("Page.startScreencast", params, sid);
             } catch { /* ignore */ }
           }
           break;

@@ -2,7 +2,7 @@
   "name": "dev-browser-panel",
   "displayName": "Dev Browser Panel",
   "description": "Embedded Chromium inside VS Code, controllable via CDP. Built so AI agents (Claude Code, dev-browser CLI, etc.) can drive a browser the user sees inside the editor. Includes logs panel, multi-tab, and autoreload.",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "publisher": "ordinum-team",
   "license": "MIT",
   "repository": {
@@ -112,6 +112,19 @@
           "type": "object",
           "default": { "width": 1280, "height": 800 },
           "description": "Initial viewport size for the embedded Chromium."
+        },
+        "devBrowserPanel.screencastFormat": {
+          "type": "string",
+          "enum": ["jpeg", "png"],
+          "default": "jpeg",
+          "description": "Image format for the CDP screencast. 'jpeg' = small frames, high FPS, slight compression artifacts. 'png' = lossless, larger frames, lower FPS (can drop to 5-15 fps on heavy pages)."
+        },
+        "devBrowserPanel.screencastQuality": {
+          "type": "number",
+          "default": 95,
+          "minimum": 1,
+          "maximum": 100,
+          "description": "JPEG quality (1-100). Only applies when screencastFormat = 'jpeg'. 90 = balanced, 95 = near-lossless, 100 = max."
         }
       }
     }
