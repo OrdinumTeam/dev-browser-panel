@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import * as path from "path";
 import * as os from "os";
+import * as fs from "fs";
 import { Session } from "./session";
 import { CDPClient, CDPEvent } from "./cdp";
 
@@ -76,9 +77,16 @@ export class DownloadsPanel implements vscode.WebviewViewProvider {
       vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ??
       path.join(os.tmpdir(), "dev-browser-panel");
     const dlPath = getDownloadPath(workspaceDir);
+    try { fs.mkdirSync(dlPath, { recursive: true }); } catch { /* best effort */ }
 
-    // Set download behavior (best-effort; some Chromium builds may not support this)
-    cdp.send("Page.setDownloadBehavior", { behavior: "allow", downloadPath: dlPath }).catch(() => undefined);
+    // Browser.setDownloadBehavior is the modern API (Page.* variant was removed
+    // from Chromium); eventsEnabled gives us Browser.download* progress events.
+    cdp
+      .send("Browser.setDownloadBehavior", { behavior: "allow", downloadPath: dlPath, eventsEnabled: true })
+      .catch(() => {
+        // Fallback for very old builds.
+        cdp.send("Page.setDownloadBehavior", { behavior: "allow", downloadPath: dlPath }).catch(() => undefined);
+      });
 
     const onWillBegin = (ev: CDPEvent): void => {
       const p = ev.params as {
@@ -134,6 +142,9 @@ export class DownloadsPanel implements vscode.WebviewViewProvider {
 
     this.onWillBeginRef = onWillBegin;
     this.onProgressRef = onProgress;
+    cdp.on("Browser.downloadWillBegin", onWillBegin);
+    cdp.on("Browser.downloadProgress", onProgress);
+    // Legacy event names, kept for old Chromium builds.
     cdp.on("Page.downloadWillBegin", onWillBegin);
     cdp.on("Page.downloadProgress", onProgress);
 
@@ -142,8 +153,14 @@ export class DownloadsPanel implements vscode.WebviewViewProvider {
 
   private teardown(): void {
     if (this.cdpRef) {
-      if (this.onWillBeginRef) this.cdpRef.off("Page.downloadWillBegin", this.onWillBeginRef);
-      if (this.onProgressRef) this.cdpRef.off("Page.downloadProgress", this.onProgressRef);
+      if (this.onWillBeginRef) {
+        this.cdpRef.off("Browser.downloadWillBegin", this.onWillBeginRef);
+        this.cdpRef.off("Page.downloadWillBegin", this.onWillBeginRef);
+      }
+      if (this.onProgressRef) {
+        this.cdpRef.off("Browser.downloadProgress", this.onProgressRef);
+        this.cdpRef.off("Page.downloadProgress", this.onProgressRef);
+      }
     }
     this.cdpRef = null;
     this.onWillBeginRef = null;

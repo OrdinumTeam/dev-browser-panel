@@ -13,3 +13,4 @@ node_modules/**/*.md
 **/.DS_Store
 *.vsix
 ralph loop/**
+scripts/**

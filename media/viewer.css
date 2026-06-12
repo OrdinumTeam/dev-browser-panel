@@ -40,6 +40,29 @@ body {
   background: var(--vscode-button-secondaryHoverBackground);
 }
 
+#toolbar button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+#toolbar button:disabled:hover {
+  background: var(--vscode-button-secondaryBackground);
+}
+
+#zoom-chip {
+  font-size: 11px;
+  padding: 2px 6px;
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 8px;
+  color: var(--vscode-descriptionForeground);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+#zoom-chip:hover {
+  background: var(--vscode-button-secondaryHoverBackground);
+}
+
 #urlbar {
   flex: 1;
   padding: 4px 8px;
@@ -125,6 +148,40 @@ body {
   outline: none;
   cursor: default;
   image-rendering: -webkit-optimize-contrast;
+}
+
+/* State overlay (browser stopped / tab crashed) */
+#overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 150;
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  background: rgba(0, 0, 0, 0.75);
+}
+
+#overlay-msg {
+  color: #ddd;
+  font-size: 14px;
+  max-width: 80%;
+  text-align: center;
+}
+
+#overlay-btn {
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+  border: none;
+  border-radius: 3px;
+  padding: 6px 16px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+#overlay-btn:hover {
+  background: var(--vscode-button-hoverBackground);
 }
 
 /* Find bar */

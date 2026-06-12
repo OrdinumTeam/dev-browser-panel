@@ -1,7 +1,13 @@
 import WebSocket from "ws";
 import { EventEmitter } from "events";
 
-type Pending = { resolve: (v: unknown) => void; reject: (e: Error) => void };
+type Pending = {
+  resolve: (v: unknown) => void;
+  reject: (e: Error) => void;
+  timer: ReturnType<typeof setTimeout> | null;
+};
+
+const DEFAULT_SEND_TIMEOUT_MS = 30_000;
 
 export interface CDPEvent {
   method: string;
@@ -45,6 +51,7 @@ export class CDPClient extends EventEmitter {
       ws.on("close", () => {
         this.connected = false;
         for (const p of this.pending.values()) {
+          if (p.timer) clearTimeout(p.timer);
           p.reject(new Error("CDP connection closed"));
         }
         this.pending.clear();
@@ -65,6 +72,7 @@ export class CDPClient extends EventEmitter {
             const p = this.pending.get(msg.id);
             if (p) {
               this.pending.delete(msg.id);
+              if (p.timer) clearTimeout(p.timer);
               if (msg.error) p.reject(new Error(`CDP error: ${msg.error.message}`));
               else p.resolve(msg.result);
             }
@@ -84,16 +92,32 @@ export class CDPClient extends EventEmitter {
     });
   }
 
-  async send<T = unknown>(method: string, params: Record<string, unknown> = {}, sessionId?: string): Promise<T> {
+  async send<T = unknown>(
+    method: string,
+    params: Record<string, unknown> = {},
+    sessionId?: string,
+    timeoutMs: number = DEFAULT_SEND_TIMEOUT_MS,
+  ): Promise<T> {
     if (!this.ws || !this.connected) throw new Error("CDP not connected");
     const id = this.nextId++;
     const msg: Record<string, unknown> = { id, method, params };
     if (sessionId) msg.sessionId = sessionId;
     return new Promise<T>((resolve, reject) => {
-      this.pending.set(id, { resolve: resolve as (v: unknown) => void, reject });
+      const timer = timeoutMs > 0
+        ? setTimeout(() => {
+            if (this.pending.delete(id)) {
+              reject(new Error(`CDP timeout after ${timeoutMs}ms: ${method}`));
+            }
+          }, timeoutMs)
+        : null;
+      this.pending.set(id, { resolve: resolve as (v: unknown) => void, reject, timer });
       this.ws!.send(JSON.stringify(msg), (err) => {
         if (err) {
-          this.pending.delete(id);
+          const p = this.pending.get(id);
+          if (p) {
+            this.pending.delete(id);
+            if (p.timer) clearTimeout(p.timer);
+          }
           reject(err);
         }
       });

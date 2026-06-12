@@ -1,7 +1,6 @@
 import * as vscode from "vscode";
 import * as path from "path";
 import * as fs from "fs";
-import * as os from "os";
 import { Session } from "./session";
 import { CDPEvent } from "./cdp";
 import { StoragePanel } from "./storage";
@@ -63,6 +62,22 @@ const MOBILE_PRESETS: MobilePreset[] = [
   },
 ];
 
+/** Chrome's zoom ladder. */
+const ZOOM_STEPS = [0.25, 0.33, 0.5, 0.67, 0.75, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3];
+
+const ALLOWED_WEBVIEW_COMMANDS = new Set([
+  "devBrowserPanel.takeScreenshot",
+  "devBrowserPanel.takeFullPageScreenshot",
+  "devBrowserPanel.printToPDF",
+  "devBrowserPanel.viewSource",
+  "devBrowserPanel.inspectElement",
+  "devBrowserPanel.toggleMobileEmulation",
+  "devBrowserPanel.showStorage",
+  "devBrowserPanel.showLogs",
+  "devBrowserPanel.showDownloads",
+  "devBrowserPanel.open",
+]);
+
 export interface DiagnosticsData {
   dpr: number;
   canvasW: number;
@@ -73,26 +88,32 @@ export interface DiagnosticsData {
   format: string;
   quality: number;
   mobilePreset: string;
+  zoom: number;
 }
 
 export class ViewerPanel {
   private static instance: ViewerPanel | null = null;
   private panel: vscode.WebviewPanel;
+  private session: Session;
   private currentTargetId: string | null = null;
   private currentSessionId: string | null = null;
   private disposables: vscode.Disposable[] = [];
+  private sessionDisposables: vscode.Disposable[] = [];
   private lastViewportWidth: number = 0;
   private lastViewportHeight: number = 0;
   private lastDpr: number = 1;
+  private lastScreencastKey: string = "";
   private lastScreencastMaxW: number = 0;
   private lastScreencastMaxH: number = 0;
   private currentScreencastFormat: "jpeg" | "png" = "jpeg";
   private pendingScreencastStart: string | null = null;
   private mobilePresetIndex: number = 0;
+  private zoomIndex: number = ZOOM_STEPS.indexOf(1);
   private lastFrameW: number = 0;
   private lastFrameH: number = 0;
   private findActive: boolean = false;
   private inspectModeActive: boolean = false;
+  private disposed: boolean = false;
 
   static getInstance(): ViewerPanel | null {
     return ViewerPanel.instance;
@@ -100,6 +121,7 @@ export class ViewerPanel {
 
   static create(context: vscode.ExtensionContext, session: Session): ViewerPanel {
     if (ViewerPanel.instance) {
+      ViewerPanel.instance.attachSession(session);
       ViewerPanel.instance.panel.reveal(vscode.ViewColumn.Two);
       return ViewerPanel.instance;
     }
@@ -121,9 +143,10 @@ export class ViewerPanel {
   private constructor(
     context: vscode.ExtensionContext,
     panel: vscode.WebviewPanel,
-    private session: Session,
+    session: Session,
   ) {
     this.panel = panel;
+    this.session = session;
     this.panel.webview.html = this.getHtml(context);
 
     this.panel.onDidDispose(
@@ -141,17 +164,49 @@ export class ViewerPanel {
       this.disposables,
     );
 
+    this.attachSession(session);
+  }
+
+  /**
+   * Binds (or re-binds) a Session to this panel. Lets the same panel survive
+   * a browser restart: old listeners are detached, the new session takes over
+   * and the screencast resumes in place.
+   */
+  attachSession(session: Session): void {
+    for (const d of this.sessionDisposables) d.dispose();
+    this.sessionDisposables = [];
+    this.session = session;
+    this.currentTargetId = null;
+    this.currentSessionId = null;
+    this.lastScreencastKey = "";
+
     const onActive = (): void => { void this.switchTarget(); };
     const onTabs = (): void => this.refreshTabs();
     const onAttached = (): void => { void this.switchTarget(); };
+    const onStopped = (reason?: string): void => {
+      this.postMessage({
+        type: "overlay",
+        kind: "stopped",
+        text: reason ? `Browser stopped: ${reason}` : "Browser stopped",
+      });
+    };
+    const onCrashed = (info: { targetId: string }): void => {
+      if (info.targetId === this.session.activeTargetId) {
+        this.postMessage({ type: "overlay", kind: "crashed", text: "This tab crashed" });
+      }
+    };
     session.on("active-changed", onActive);
     session.on("targets-changed", onTabs);
     session.on("attached", onAttached);
-    this.disposables.push({
+    session.on("stopped", onStopped);
+    session.on("target-crashed", onCrashed);
+    this.sessionDisposables.push({
       dispose: () => {
         session.off("active-changed", onActive);
         session.off("targets-changed", onTabs);
         session.off("attached", onAttached);
+        session.off("stopped", onStopped);
+        session.off("target-crashed", onCrashed);
       },
     });
 
@@ -159,13 +214,20 @@ export class ViewerPanel {
     if (cdp) {
       const onFrame = (ev: CDPEvent): void => {
         if (ev.sessionId !== this.currentSessionId) return;
-        const params = ev.params as { data: string; metadata?: { deviceWidth?: number; deviceHeight?: number }; sessionId?: number };
+        const params = ev.params as {
+          data: string;
+          metadata?: { deviceWidth?: number; deviceHeight?: number };
+          sessionId?: number;
+        };
         if (params.metadata?.deviceWidth) this.lastFrameW = params.metadata.deviceWidth;
         if (params.metadata?.deviceHeight) this.lastFrameH = params.metadata.deviceHeight;
-        this.panel.webview.postMessage({
+        this.postMessage({
           type: "frame",
           data: params.data,
           format: this.currentScreencastFormat,
+          // Page CSS pixels — the coordinate space Input.dispatchMouseEvent expects.
+          pageW: params.metadata?.deviceWidth ?? 0,
+          pageH: params.metadata?.deviceHeight ?? 0,
         });
         if (cdp.isConnected() && this.currentSessionId && typeof params.sessionId === "number") {
           cdp
@@ -176,28 +238,65 @@ export class ViewerPanel {
 
       const onFrameStarted = (ev: CDPEvent): void => {
         if (ev.sessionId !== this.currentSessionId) return;
-        this.panel.webview.postMessage({ type: "loading-start" });
+        this.postMessage({ type: "loading-start" });
       };
 
       const onFrameStopped = (ev: CDPEvent): void => {
         if (ev.sessionId !== this.currentSessionId) return;
-        this.panel.webview.postMessage({ type: "loading-stop" });
+        this.postMessage({ type: "loading-stop" });
+        void this.pushNavState();
+      };
+
+      // Keeps the URL bar live: fires on real navigations of the main frame…
+      const onFrameNavigated = (ev: CDPEvent): void => {
+        if (ev.sessionId !== this.currentSessionId) return;
+        const frame = (ev.params as { frame?: { parentId?: string; url?: string } }).frame;
+        if (!frame || frame.parentId) return;
+        this.postMessage({ type: "url-changed", url: frame.url ?? "" });
+        void this.pushNavState();
+      };
+
+      // …and on SPA pushState/replaceState navigations.
+      const onNavigatedInDoc = (ev: CDPEvent): void => {
+        if (ev.sessionId !== this.currentSessionId) return;
+        const url = (ev.params as { url?: string }).url;
+        this.postMessage({ type: "url-changed", url: url ?? "" });
+        void this.pushNavState();
+      };
+
+      const onInspectNode = (ev: CDPEvent): void => {
+        if (ev.sessionId !== this.currentSessionId) return;
+        const backendNodeId = (ev.params as { backendNodeId?: number }).backendNodeId;
+        if (backendNodeId) void this.onInspectedNode(backendNodeId);
       };
 
       cdp.on("Page.screencastFrame", onFrame);
       cdp.on("Page.frameStartedLoading", onFrameStarted);
       cdp.on("Page.frameStoppedLoading", onFrameStopped);
-      this.disposables.push({
+      cdp.on("Page.frameNavigated", onFrameNavigated);
+      cdp.on("Page.navigatedWithinDocument", onNavigatedInDoc);
+      cdp.on("Overlay.inspectNodeRequested", onInspectNode);
+      this.sessionDisposables.push({
         dispose: () => {
           cdp.off("Page.screencastFrame", onFrame);
           cdp.off("Page.frameStartedLoading", onFrameStarted);
           cdp.off("Page.frameStoppedLoading", onFrameStopped);
+          cdp.off("Page.frameNavigated", onFrameNavigated);
+          cdp.off("Page.navigatedWithinDocument", onNavigatedInDoc);
+          cdp.off("Overlay.inspectNodeRequested", onInspectNode);
         },
       });
     }
 
+    this.postMessage({ type: "overlay", kind: "none" });
+    this.pushSearchEngine();
     void this.switchTarget();
     this.refreshTabs();
+  }
+
+  private postMessage(msg: Record<string, unknown>): void {
+    if (this.disposed) return;
+    void this.panel.webview.postMessage(msg);
   }
 
   private async switchTarget(): Promise<void> {
@@ -209,6 +308,8 @@ export class ViewerPanel {
     const cdp = this.session.getCDP();
     if (!cdp) return;
 
+    if (this.currentSessionId === target.sessionId && this.currentTargetId === active) return;
+
     if (this.currentSessionId && this.currentSessionId !== target.sessionId) {
       try {
         await cdp.send("Page.stopScreencast", {}, this.currentSessionId);
@@ -217,59 +318,166 @@ export class ViewerPanel {
 
     this.currentTargetId = active;
     this.currentSessionId = target.sessionId;
+    this.lastScreencastKey = "";
 
     try {
       await cdp.send("Page.enable", {}, target.sessionId);
     } catch { /* ignore */ }
 
-    this.panel.webview.postMessage({
+    this.postMessage({
       type: "active-target",
       targetId: active,
       url: target.url,
       title: target.title,
     });
+    void this.pushNavState();
 
-    // Phase 3: Only start screencast if viewport is already known
     if (this.lastViewportWidth === 0) {
-      // Defer screencast start until we receive the viewport message
+      // Defer metrics+screencast until the webview reports its viewport size.
       this.pendingScreencastStart = active;
     } else {
-      await this.startScreencast(target.sessionId);
+      await this.applyMetricsAndScreencast();
     }
   }
 
-  private async startScreencast(sessionId: string): Promise<void> {
+  private currentPreset(): MobilePreset {
+    return MOBILE_PRESETS[this.mobilePresetIndex];
+  }
+
+  private currentZoom(): number {
+    return this.mobilePresetIndex === 0 ? ZOOM_STEPS[this.zoomIndex] : 1;
+  }
+
+  /**
+   * Single source of truth for page emulation + screencast. Desktop mode
+   * follows the panel size (with zoom); mobile presets pin the page to the
+   * device's dimensions regardless of panel size (the webview letterboxes).
+   */
+  private async applyMetricsAndScreencast(): Promise<void> {
     const cdp = this.session.getCDP();
-    if (!cdp) return;
+    const sid = this.currentSessionId;
+    if (!cdp || !sid) return;
+
+    const preset = this.currentPreset();
     const dpr = this.lastDpr || 1;
-    const w = this.lastViewportWidth || 1280;
-    const h = this.lastViewportHeight || 800;
+    const zoom = this.currentZoom();
+    const canvasW = this.lastViewportWidth || 1280;
+    const canvasH = this.lastViewportHeight || 800;
+
+    let metrics: Record<string, unknown>;
+    let maxW: number;
+    let maxH: number;
+    if (this.mobilePresetIndex === 0) {
+      metrics = {
+        width: Math.max(1, Math.round(canvasW / zoom)),
+        height: Math.max(1, Math.round(canvasH / zoom)),
+        deviceScaleFactor: dpr * zoom,
+        mobile: false,
+      };
+      maxW = Math.round(canvasW * dpr);
+      maxH = Math.round(canvasH * dpr);
+    } else {
+      metrics = {
+        width: preset.width,
+        height: preset.height,
+        deviceScaleFactor: preset.dpr,
+        mobile: true,
+      };
+      maxW = 4096;
+      maxH = 4096;
+    }
+
+    try {
+      await cdp.send("Emulation.setDeviceMetricsOverride", metrics, sid);
+      await cdp.send("Emulation.setUserAgentOverride", { userAgent: preset.userAgent }, sid);
+      await cdp.send("Emulation.setTouchEmulationEnabled", { enabled: preset.touch }, sid);
+      await cdp.send(
+        "Emulation.setEmitTouchEventsForMouse",
+        { enabled: preset.touch, configuration: preset.touch ? "mobile" : "desktop" },
+        sid,
+      );
+    } catch { /* target may be navigating */ }
+
     const cfg = vscode.workspace.getConfiguration("devBrowserPanel");
     const format: "jpeg" | "png" = cfg.get<string>("screencastFormat", "jpeg") === "png" ? "png" : "jpeg";
-    this.currentScreencastFormat = format;
     const quality = Math.max(1, Math.min(100, cfg.get<number>("screencastQuality", 95)));
+    this.currentScreencastFormat = format;
+
+    // Restart the screencast only when something meaningful changed. The 50px
+    // size threshold avoids restarting 60×/sec during a drag-resize.
+    const key = `${sid}|${format}|${quality}|${this.mobilePresetIndex}`;
+    const sizeChanged =
+      Math.abs(maxW - this.lastScreencastMaxW) > 50 ||
+      Math.abs(maxH - this.lastScreencastMaxH) > 50;
+    if (key === this.lastScreencastKey && !sizeChanged) return;
+    this.lastScreencastKey = key;
+    this.lastScreencastMaxW = maxW;
+    this.lastScreencastMaxH = maxH;
+
     const params: Record<string, unknown> = {
       format,
       everyNthFrame: 1,
-      maxWidth: Math.round(w * dpr),
-      maxHeight: Math.round(h * dpr),
+      maxWidth: maxW,
+      maxHeight: maxH,
     };
     if (format === "jpeg") params.quality = quality;
     try {
-      await cdp.send("Page.startScreencast", params, sessionId);
+      await cdp.send("Page.stopScreencast", {}, sid);
+    } catch { /* may not be running */ }
+    try {
+      await cdp.send("Page.startScreencast", params, sid);
     } catch { /* ignore */ }
+  }
+
+  private async pushNavState(): Promise<void> {
+    if (!this.currentTargetId) return;
+    const state = await this.session.getNavState(this.currentTargetId);
+    this.postMessage({ type: "nav-state", ...state });
+  }
+
+  private pushSearchEngine(): void {
+    const cfg = vscode.workspace.getConfiguration("devBrowserPanel");
+    this.postMessage({ type: "search-engine", engine: cfg.get<string>("searchEngine", "google") });
   }
 
   private refreshTabs(): void {
     const tabs = Array.from(this.session.targets.values()).filter((t) => t.type === "page");
-    this.panel.webview.postMessage({
+    this.postMessage({
       type: "tabs",
       tabs: tabs.map((t) => ({ targetId: t.targetId, title: t.title, url: t.url })),
       activeTargetId: this.session.activeTargetId,
     });
+    // Keep the URL bar in sync with the active tab (e.g. after link clicks).
+    const active = this.session.activeTargetId
+      ? this.session.targets.get(this.session.activeTargetId)
+      : null;
+    if (active && active.targetId === this.currentTargetId) {
+      this.postMessage({ type: "url-changed", url: active.url, title: active.title });
+    }
   }
 
   private async onMessage(msg: InboundMessage): Promise<void> {
+    // Messages that work even with a dead session.
+    if (msg.type === "restart-session") {
+      await vscode.commands.executeCommand("devBrowserPanel.open");
+      return;
+    }
+    if (msg.type === "command") {
+      const command = String(msg.command ?? "");
+      if (ALLOWED_WEBVIEW_COMMANDS.has(command)) {
+        await vscode.commands.executeCommand(command);
+      }
+      return;
+    }
+    if (msg.type === "copy-text") {
+      const text = String(msg.text ?? "");
+      if (text) {
+        await vscode.env.clipboard.writeText(text);
+        vscode.window.setStatusBarMessage("$(clippy) Copied", 2000);
+      }
+      return;
+    }
+
     const cdp = this.session.getCDP();
     if (!cdp) return;
     const sid = this.currentSessionId;
@@ -291,7 +499,26 @@ export class ViewerPanel {
           break;
         }
         case "reload": {
-          if (this.currentTargetId) await this.session.reload(this.currentTargetId);
+          if (this.currentTargetId) await this.session.reload(this.currentTargetId, !!msg.hard);
+          break;
+        }
+        case "stop-loading": {
+          if (this.currentTargetId) await this.session.stopLoading(this.currentTargetId);
+          break;
+        }
+        case "back": {
+          if (this.currentTargetId) await this.session.goBack(this.currentTargetId);
+          break;
+        }
+        case "forward": {
+          if (this.currentTargetId) await this.session.goForward(this.currentTargetId);
+          break;
+        }
+        case "reload-crashed": {
+          if (this.currentTargetId) {
+            await this.session.recoverTarget(this.currentTargetId);
+            this.postMessage({ type: "overlay", kind: "none" });
+          }
           break;
         }
         case "switch-tab": {
@@ -307,77 +534,86 @@ export class ViewerPanel {
           break;
         }
         case "viewport": {
-          if (!sid) return;
           const w = msg.width as number;
           const h = msg.height as number;
           const dpr = Math.max(1, Math.min(3, (msg.dpr as number) || 1));
           this.lastViewportWidth = w;
           this.lastViewportHeight = h;
           this.lastDpr = dpr;
-          await cdp.send(
-            "Emulation.setDeviceMetricsOverride",
-            { width: w, height: h, deviceScaleFactor: dpr, mobile: false },
-            sid,
-          );
 
-          // Phase 3: If a screencast start was deferred, start it now
           if (this.pendingScreencastStart !== null && this.pendingScreencastStart === this.currentTargetId) {
-            const targetToStart = this.session.targets.get(this.pendingScreencastStart);
             this.pendingScreencastStart = null;
-            if (targetToStart?.sessionId) {
-              await this.startScreencast(targetToStart.sessionId);
-            }
           }
-
-          // Restart screencast with proper maxWidth/Height so we get
-          // full-resolution DPR-aware frames. Threshold avoids restarting
-          // 60x/sec during a drag-resize.
-          const newMaxW = Math.round(w * dpr);
-          const newMaxH = Math.round(h * dpr);
-          if (
-            Math.abs(newMaxW - this.lastScreencastMaxW) > 50 ||
-            Math.abs(newMaxH - this.lastScreencastMaxH) > 50
-          ) {
-            this.lastScreencastMaxW = newMaxW;
-            this.lastScreencastMaxH = newMaxH;
-            const cfg = vscode.workspace.getConfiguration("devBrowserPanel");
-            const format: "jpeg" | "png" = cfg.get<string>("screencastFormat", "jpeg") === "png" ? "png" : "jpeg";
-            this.currentScreencastFormat = format;
-            const quality = Math.max(1, Math.min(100, cfg.get<number>("screencastQuality", 95)));
-            const params: Record<string, unknown> = {
-              format,
-              everyNthFrame: 1,
-              maxWidth: newMaxW,
-              maxHeight: newMaxH,
-            };
-            if (format === "jpeg") params.quality = quality;
-            try {
-              await cdp.send("Page.stopScreencast", {}, sid);
-              await cdp.send("Page.startScreencast", params, sid);
-            } catch { /* ignore */ }
-          }
+          await this.applyMetricsAndScreencast();
           break;
         }
-        case "back": {
-          if (!sid) return;
-          await cdp.send("Runtime.evaluate", { expression: "history.back()" }, sid);
-          break;
-        }
-        case "forward": {
-          if (!sid) return;
-          await cdp.send("Runtime.evaluate", { expression: "history.forward()" }, sid);
+        case "zoom": {
+          const direction = String(msg.direction ?? "reset");
+          if (this.mobilePresetIndex !== 0) break; // zoom only in desktop mode
+          if (direction === "in") this.zoomIndex = Math.min(ZOOM_STEPS.length - 1, this.zoomIndex + 1);
+          else if (direction === "out") this.zoomIndex = Math.max(0, this.zoomIndex - 1);
+          else this.zoomIndex = ZOOM_STEPS.indexOf(1);
+          await this.applyMetricsAndScreencast();
+          this.postMessage({ type: "zoom-level", zoom: this.currentZoom() });
           break;
         }
         case "copy-request": {
           if (!sid) return;
-          const copyResult = await cdp.send<{ result?: { value?: string } }>(
-            "Runtime.evaluate",
-            { expression: "window.getSelection().toString()", returnByValue: true },
-            sid,
-          );
-          const text = copyResult?.result?.value ?? "";
-          await vscode.env.clipboard.writeText(text);
-          vscode.window.showInformationMessage(`Copied ${text.length} chars`);
+          const text = await this.getSelectedText(sid);
+          if (text) {
+            await vscode.env.clipboard.writeText(text);
+            vscode.window.setStatusBarMessage(`$(clippy) Copied ${text.length} chars`, 2000);
+          }
+          break;
+        }
+        case "cut-request": {
+          if (!sid) return;
+          const text = await this.getSelectedText(sid);
+          if (text) {
+            await vscode.env.clipboard.writeText(text);
+            // Delete removes the selection in inputs and contenteditable alike.
+            await cdp.send(
+              "Input.dispatchKeyEvent",
+              { type: "keyDown", key: "Delete", code: "Delete", keyCode: 46, windowsVirtualKeyCode: 46 },
+              sid,
+            );
+            await cdp.send(
+              "Input.dispatchKeyEvent",
+              { type: "keyUp", key: "Delete", code: "Delete", keyCode: 46, windowsVirtualKeyCode: 46 },
+              sid,
+            );
+            vscode.window.setStatusBarMessage(`$(clippy) Cut ${text.length} chars`, 2000);
+          }
+          break;
+        }
+        case "select-all": {
+          if (!sid) return;
+          // Editing command — plain Cmd/Ctrl+A key events do nothing in headless.
+          try {
+            await cdp.send(
+              "Input.dispatchKeyEvent",
+              {
+                type: "keyDown",
+                key: "a",
+                code: "KeyA",
+                keyCode: 65,
+                windowsVirtualKeyCode: 65,
+                commands: ["selectAll"],
+              },
+              sid,
+            );
+            await cdp.send(
+              "Input.dispatchKeyEvent",
+              { type: "keyUp", key: "a", code: "KeyA", keyCode: 65, windowsVirtualKeyCode: 65 },
+              sid,
+            );
+          } catch {
+            await cdp.send(
+              "Runtime.evaluate",
+              { expression: "document.execCommand('selectAll')", userGesture: true },
+              sid,
+            );
+          }
           break;
         }
         case "paste-request": {
@@ -393,7 +629,7 @@ export class ViewerPanel {
           const x = msg.x as number;
           const y = msg.y as number;
           const expr = `(function(){
-            var el = document.elementFromPoint(${x}, ${y});
+            var el = document.elementFromPoint(${Number(x)}, ${Number(y)});
             if (!el) return JSON.stringify({});
             var a = el.closest('a');
             var img = el.tagName === 'IMG' ? el : el.querySelector('img');
@@ -413,7 +649,7 @@ export class ViewerPanel {
               hitData = JSON.parse(hitResult.result.value) as { link?: string; imgSrc?: string };
             }
           } catch { /* ignore */ }
-          this.panel.webview.postMessage({
+          this.postMessage({
             type: "context-hit-result",
             link: hitData.link,
             imgSrc: hitData.imgSrc,
@@ -448,6 +684,31 @@ export class ViewerPanel {
     }
   }
 
+  /** Selection text that also covers <input>/<textarea>, which window.getSelection() misses. */
+  private async getSelectedText(sid: string): Promise<string> {
+    const cdp = this.session.getCDP();
+    if (!cdp) return "";
+    const expr = `(function(){
+      var el = document.activeElement;
+      if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') &&
+          el.selectionStart != null && el.selectionEnd > el.selectionStart) {
+        return el.value.substring(el.selectionStart, el.selectionEnd);
+      }
+      var s = window.getSelection();
+      return s ? s.toString() : '';
+    })()`;
+    try {
+      const result = await cdp.send<{ result?: { value?: string } }>(
+        "Runtime.evaluate",
+        { expression: expr, returnByValue: true },
+        sid,
+      );
+      return result?.result?.value ?? "";
+    } catch {
+      return "";
+    }
+  }
+
   // --- Public methods for commands ---
 
   async takeScreenshot(fullPage: boolean): Promise<void> {
@@ -462,10 +723,16 @@ export class ViewerPanel {
         "Page.captureScreenshot",
         { format: "png", captureBeyondViewport: fullPage },
         sid,
+        120_000,
       );
+      const wsFolder = vscode.workspace.workspaceFolders?.[0]?.uri;
+      const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
       const uri = await vscode.window.showSaveDialog({
         filters: { "PNG Image": ["png"] },
         saveLabel: "Save Screenshot",
+        defaultUri: wsFolder
+          ? vscode.Uri.joinPath(wsFolder, `screenshot-${stamp}.png`)
+          : undefined,
       });
       if (!uri) return;
       const buf = Buffer.from(result.data, "base64");
@@ -488,10 +755,14 @@ export class ViewerPanel {
         "Page.printToPDF",
         { printBackground: true },
         sid,
+        120_000,
       );
+      const wsFolder = vscode.workspace.workspaceFolders?.[0]?.uri;
+      const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
       const uri = await vscode.window.showSaveDialog({
         filters: { "PDF Document": ["pdf"] },
         saveLabel: "Save PDF",
+        defaultUri: wsFolder ? vscode.Uri.joinPath(wsFolder, `page-${stamp}.pdf`) : undefined,
       });
       if (!uri) return;
       const buf = Buffer.from(result.data, "base64");
@@ -516,9 +787,7 @@ export class ViewerPanel {
         sid,
       );
       const html = result?.result?.value ?? "";
-      const tmpFile = path.join(os.tmpdir(), `dev-browser-source-${Date.now()}.html`);
-      fs.writeFileSync(tmpFile, html, "utf8");
-      const doc = await vscode.workspace.openTextDocument(tmpFile);
+      const doc = await vscode.workspace.openTextDocument({ content: html, language: "html" });
       await vscode.window.showTextDocument(doc, { viewColumn: vscode.ViewColumn.Beside });
     } catch (e) {
       vscode.window.showErrorMessage(`View source failed: ${(e as Error).message}`);
@@ -533,25 +802,11 @@ export class ViewerPanel {
       return;
     }
     this.mobilePresetIndex = (this.mobilePresetIndex + 1) % MOBILE_PRESETS.length;
-    const preset = MOBILE_PRESETS[this.mobilePresetIndex];
+    const preset = this.currentPreset();
     try {
-      await cdp.send(
-        "Emulation.setDeviceMetricsOverride",
-        {
-          width: preset.width,
-          height: preset.height,
-          deviceScaleFactor: preset.dpr,
-          mobile: preset.mobile,
-        },
-        sid,
-      );
-      if (preset.userAgent) {
-        await cdp.send("Emulation.setUserAgentOverride", { userAgent: preset.userAgent }, sid);
-      } else {
-        await cdp.send("Emulation.setUserAgentOverride", { userAgent: "" }, sid);
-      }
-      await cdp.send("Emulation.setTouchEmulationEnabled", { enabled: preset.touch }, sid);
-      this.panel.webview.postMessage({ type: "mobile-preset", name: preset.name });
+      await this.applyMetricsAndScreencast();
+      this.postMessage({ type: "mobile-preset", name: preset.name });
+      this.postMessage({ type: "zoom-level", zoom: this.currentZoom() });
     } catch (e) {
       vscode.window.showErrorMessage(`Mobile emulation failed: ${(e as Error).message}`);
     }
@@ -559,7 +814,7 @@ export class ViewerPanel {
 
   triggerFind(): void {
     this.findActive = !this.findActive;
-    this.panel.webview.postMessage({ type: "show-find", active: this.findActive });
+    this.postMessage({ type: "show-find", active: this.findActive });
   }
 
   async toggleInspectMode(): Promise<void> {
@@ -572,6 +827,7 @@ export class ViewerPanel {
     this.inspectModeActive = !this.inspectModeActive;
     try {
       if (this.inspectModeActive) {
+        await cdp.send("DOM.enable", {}, sid); // Overlay requires the DOM agent
         await cdp.send("Overlay.enable", {}, sid);
         await cdp.send(
           "Overlay.setInspectMode",
@@ -588,14 +844,43 @@ export class ViewerPanel {
           },
           sid,
         );
-        vscode.window.showInformationMessage("Inspect mode ON — click an element in the browser");
+        vscode.window.setStatusBarMessage("$(inspect) Inspect mode ON — click an element", 4000);
       } else {
-        await cdp.send("Overlay.setInspectMode", { mode: "none", highlightConfig: {} }, sid);
-        await cdp.send("Overlay.disable", {}, sid);
-        vscode.window.showInformationMessage("Inspect mode OFF");
+        await this.exitInspectMode(sid);
       }
     } catch (e) {
+      this.inspectModeActive = false;
       vscode.window.showErrorMessage(`Inspect mode failed: ${(e as Error).message}`);
+    }
+  }
+
+  private async exitInspectMode(sid: string): Promise<void> {
+    const cdp = this.session.getCDP();
+    if (!cdp) return;
+    this.inspectModeActive = false;
+    try {
+      await cdp.send("Overlay.setInspectMode", { mode: "none", highlightConfig: {} }, sid);
+      await cdp.send("Overlay.disable", {}, sid);
+      await cdp.send("DOM.disable", {}, sid);
+    } catch { /* ignore */ }
+  }
+
+  /** User clicked an element in inspect mode → show its HTML. */
+  private async onInspectedNode(backendNodeId: number): Promise<void> {
+    const cdp = this.session.getCDP();
+    const sid = this.currentSessionId;
+    if (!cdp || !sid) return;
+    try {
+      const { outerHTML } = await cdp.send<{ outerHTML: string }>(
+        "DOM.getOuterHTML",
+        { backendNodeId },
+        sid,
+      );
+      await this.exitInspectMode(sid);
+      const doc = await vscode.workspace.openTextDocument({ content: outerHTML, language: "html" });
+      await vscode.window.showTextDocument(doc, { viewColumn: vscode.ViewColumn.Beside, preview: true });
+    } catch (e) {
+      vscode.window.showErrorMessage(`Inspect failed: ${(e as Error).message}`);
     }
   }
 
@@ -613,7 +898,7 @@ export class ViewerPanel {
   getDiagnosticsData(): DiagnosticsData {
     const cfg = vscode.workspace.getConfiguration("devBrowserPanel");
     const quality = Math.max(1, Math.min(100, cfg.get<number>("screencastQuality", 95)));
-    const preset = MOBILE_PRESETS[this.mobilePresetIndex];
+    const preset = this.currentPreset();
     return {
       dpr: this.lastDpr,
       canvasW: this.lastViewportWidth,
@@ -624,6 +909,7 @@ export class ViewerPanel {
       format: this.currentScreencastFormat,
       quality,
       mobilePreset: preset.name,
+      zoom: this.currentZoom(),
     };
   }
 
@@ -641,18 +927,23 @@ export class ViewerPanel {
 </head>
 <body>
 <div id="toolbar">
-  <button id="btn-back" title="Back">&#8592;</button>
-  <button id="btn-forward" title="Forward">&#8594;</button>
-  <button id="btn-reload" title="Reload">&#8987;</button>
-  <input id="urlbar" type="text" placeholder="Search or type URL">
+  <button id="btn-back" title="Back (Alt+←)" disabled>&#8592;</button>
+  <button id="btn-forward" title="Forward (Alt+→)" disabled>&#8594;</button>
+  <button id="btn-reload" title="Reload (Cmd/Ctrl+R) — Shift for hard reload">&#8635;</button>
+  <input id="urlbar" type="text" placeholder="Search or type URL" spellcheck="false">
+  <span id="zoom-chip" title="Zoom (Cmd/Ctrl + / - / 0). Click to reset." style="display:none;"></span>
   <span id="mobile-indicator" title="Mobile emulation active" style="display:none;font-size:16px;line-height:1;padding:0 4px;" aria-label="Mobile emulation"></span>
   <button id="btn-screenshot" title="Take Screenshot">&#128247;</button>
-  <button id="btn-newtab" title="New Tab">+</button>
+  <button id="btn-newtab" title="New Tab (Cmd/Ctrl+T)">+</button>
 </div>
 <div id="loading-bar"></div>
 <div id="tabs"></div>
 <div id="viewport">
   <canvas id="screen" tabindex="0"></canvas>
+  <div id="overlay">
+    <div id="overlay-msg"></div>
+    <button id="overlay-btn"></button>
+  </div>
   <div id="find-bar">
     <input id="find-input" type="text" placeholder="Find in page...">
     <span id="find-count"></span>
@@ -668,7 +959,15 @@ export class ViewerPanel {
   }
 
   dispose(): void {
+    this.disposed = true;
+    for (const d of this.sessionDisposables) d.dispose();
+    this.sessionDisposables = [];
     for (const d of this.disposables) d.dispose();
     this.disposables = [];
+    // Stop streaming frames nobody is watching.
+    const cdp = this.session.getCDP();
+    if (cdp && this.currentSessionId) {
+      cdp.send("Page.stopScreencast", {}, this.currentSessionId).catch(() => undefined);
+    }
   }
 }

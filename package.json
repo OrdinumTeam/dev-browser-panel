@@ -2,7 +2,7 @@
   "name": "dev-browser-panel",
   "displayName": "Dev Browser Panel",
   "description": "Embedded Chromium inside VS Code, controllable via CDP. Built so AI agents (Claude Code, dev-browser CLI, etc.) can drive a browser the user sees inside the editor. Includes logs panel, multi-tab, and autoreload.",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "publisher": "ordinum-team",
   "license": "MIT",
   "repository": {
@@ -79,6 +79,16 @@
       {
         "command": "devBrowserPanel.reload",
         "title": "Dev Browser Panel: Reload Current Tab",
+        "category": "Dev Browser Panel"
+      },
+      {
+        "command": "devBrowserPanel.goBack",
+        "title": "Dev Browser Panel: Go Back",
+        "category": "Dev Browser Panel"
+      },
+      {
+        "command": "devBrowserPanel.goForward",
+        "title": "Dev Browser Panel: Go Forward",
         "category": "Dev Browser Panel"
       },
       {
@@ -208,6 +218,11 @@
           "type": "string",
           "default": "",
           "description": "Directory for downloads. Leave blank to use <workspace>/.dev-browser-panel/downloads/."
+        },
+        "devBrowserPanel.restoreTabs": {
+          "type": "boolean",
+          "default": true,
+          "description": "Reopen the tabs from the previous session when the browser starts (Chrome-like 'continue where you left off')."
         }
       }
     }

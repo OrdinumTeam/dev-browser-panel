@@ -6,13 +6,17 @@
   const ctx = /** @type {CanvasRenderingContext2D} */ (canvas.getContext('2d'));
   const urlbar = /** @type {HTMLInputElement} */ (document.getElementById('urlbar'));
   const tabsEl = document.getElementById('tabs');
-  const btnBack = document.getElementById('btn-back');
-  const btnForward = document.getElementById('btn-forward');
-  const btnReload = document.getElementById('btn-reload');
+  const btnBack = /** @type {HTMLButtonElement} */ (document.getElementById('btn-back'));
+  const btnForward = /** @type {HTMLButtonElement} */ (document.getElementById('btn-forward'));
+  const btnReload = /** @type {HTMLButtonElement} */ (document.getElementById('btn-reload'));
   const btnNewTab = document.getElementById('btn-newtab');
   const btnScreenshot = document.getElementById('btn-screenshot');
+  const zoomChip = document.getElementById('zoom-chip');
   const mobileIndicator = document.getElementById('mobile-indicator');
   const loadingBar = document.getElementById('loading-bar');
+  const overlay = document.getElementById('overlay');
+  const overlayMsg = document.getElementById('overlay-msg');
+  const overlayBtn = document.getElementById('overlay-btn');
   const findBar = document.getElementById('find-bar');
   const findInput = /** @type {HTMLInputElement} */ (document.getElementById('find-input'));
   const findCount = document.getElementById('find-count');
@@ -21,16 +25,24 @@
   const findCloseBtn = document.getElementById('find-close');
   const contextMenu = document.getElementById('context-menu');
 
-  // Browser viewport dimensions (what the CDP frame was rendered at)
-  let browserW = 1280;
-  let browserH = 800;
+  const RELOAD_GLYPH = '↻'; // ↻
+  const STOP_GLYPH = '✕';   // ✕
+
+  // Page CSS dimensions (the coordinate space CDP input events expect),
+  // taken from screencast frame metadata.
+  let pageW = 0;
+  let pageH = 0;
+  // Where the last frame was drawn inside the canvas (device px), for
+  // aspect-fit ("contain") rendering + mouse coordinate mapping.
+  let dest = null;
+  let lastFrameImg = null;
   let lastMoveTime = 0;
   let currentSearchEngine = 'google';
+  let isLoading = false;
+  let activeTabId = null;
+  let overlayKind = 'none';
 
-  // Feature 13d — frame mismatch detection
-  const _mismatchSeen = new Set();
-
-  // URL history (last 20)
+  // URL history (last 20) for the datalist dropdown
   const urlHistory = [];
   const MAX_HISTORY = 20;
 
@@ -42,21 +54,37 @@
     return Math.max(1, Math.min(3, window.devicePixelRatio || 1));
   }
 
-  // ---- Initialize canvas size (DPR-aware for crisp rendering on Retina) ----
-  // IMPORTANT: do NOT set canvas.style.width/height inline. The CSS
-  // (width: 100%; height: 100% on #screen, flex: 1 on #viewport) is the
-  // single source of truth for DISPLAY size. We only set canvas.width/height
-  // (the backing-store size, in device pixels) for crisp 1:1 rendering with
-  // the screencast frames. Inline style would override the CSS and create
-  // a "frozen" smaller canvas when the panel is resized.
+  function post(msg) {
+    vscode.postMessage(msg);
+  }
+
+  // ---- Canvas sizing (backing store in device px; CSS controls display size) ----
   function sizeCanvas(cssW, cssH) {
     const r = dpr();
     canvas.width = Math.round(cssW * r);
     canvas.height = Math.round(cssH * r);
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = 'high';
+    redraw();
+  }
+
+  function redraw() {
     ctx.fillStyle = '#1e1e1e';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
+    if (lastFrameImg) drawFrame(lastFrameImg);
+  }
+
+  function drawFrame(img) {
+    const fw = img.naturalWidth;
+    const fh = img.naturalHeight;
+    if (!fw || !fh) return;
+    const s = Math.min(canvas.width / fw, canvas.height / fh);
+    const dw = Math.max(1, Math.round(fw * s));
+    const dh = Math.max(1, Math.round(fh * s));
+    const dx = Math.round((canvas.width - dw) / 2);
+    const dy = Math.round((canvas.height - dh) / 2);
+    dest = { dx, dy, dw, dh };
+    ctx.drawImage(img, dx, dy, dw, dh);
   }
 
   function initCanvas() {
@@ -73,32 +101,32 @@
     const h = Math.floor(rect.height);
     if (w > 0 && h > 0) {
       sizeCanvas(w, h);
-      vscode.postMessage({ type: 'viewport', width: w, height: h, dpr: dpr() });
+      post({ type: 'viewport', width: w, height: h, dpr: dpr() });
     }
   });
   ro.observe(canvas);
 
-  // Send initial viewport after layout settles
   setTimeout(() => {
     const rect = canvas.getBoundingClientRect();
     if (rect.width > 0 && rect.height > 0) {
-      vscode.postMessage({
-        type: 'viewport',
-        width: Math.floor(rect.width),
-        height: Math.floor(rect.height),
-        dpr: dpr(),
-      });
+      post({ type: 'viewport', width: Math.floor(rect.width), height: Math.floor(rect.height), dpr: dpr() });
     }
   }, 150);
 
-  // ---- Loading bar ----
+  // ---- Loading bar + reload/stop button ----
+  function setLoading(loading) {
+    isLoading = loading;
+    btnReload.textContent = loading ? STOP_GLYPH : RELOAD_GLYPH;
+    btnReload.title = loading ? 'Stop loading (Esc)' : 'Reload (Cmd/Ctrl+R) — Shift for hard reload';
+  }
+
   function startLoading() {
+    setLoading(true);
     if (loadingTimer) clearInterval(loadingTimer);
     loadingProgress = 0;
     loadingBar.style.transition = 'none';
     loadingBar.style.width = '0%';
     loadingBar.style.opacity = '1';
-    // Animate 0 → 90% gradually
     loadingTimer = setInterval(() => {
       loadingProgress = Math.min(90, loadingProgress + (90 - loadingProgress) * 0.1 + 1);
       loadingBar.style.transition = 'width 0.2s ease';
@@ -110,7 +138,8 @@
     }, 200);
   }
 
-  function stopLoading() {
+  function stopLoadingBar() {
+    setLoading(false);
     if (loadingTimer) { clearInterval(loadingTimer); loadingTimer = null; }
     loadingBar.style.transition = 'width 0.2s ease';
     loadingBar.style.width = '100%';
@@ -121,6 +150,23 @@
     }, 200);
   }
 
+  // ---- Overlay (browser stopped / tab crashed) ----
+  function showOverlay(kind, text) {
+    overlayKind = kind;
+    if (kind === 'none') {
+      overlay.style.display = 'none';
+      return;
+    }
+    overlayMsg.textContent = text || (kind === 'crashed' ? 'This tab crashed' : 'Browser stopped');
+    overlayBtn.textContent = kind === 'crashed' ? 'Reload Tab' : 'Restart Browser';
+    overlay.style.display = 'flex';
+  }
+
+  overlayBtn.addEventListener('click', () => {
+    if (overlayKind === 'crashed') post({ type: 'reload-crashed' });
+    else post({ type: 'restart-session' });
+  });
+
   // ---- Find bar ----
   function showFindBar(active) {
     if (active) {
@@ -130,65 +176,48 @@
     } else {
       findBar.style.display = 'none';
       findCount.textContent = '';
-      vscode.postMessage({ type: 'find-close' });
+      post({ type: 'find-close' });
       canvas.focus();
     }
   }
 
-  if (findInput) {
-    findInput.addEventListener('input', () => {
-      const q = findInput.value;
-      if (q) {
-        vscode.postMessage({ type: 'find', query: q });
-      }
-    });
+  findInput.addEventListener('input', () => {
+    const q = findInput.value;
+    if (q) post({ type: 'find', query: q });
+  });
 
-    findInput.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') {
-        e.preventDefault();
-        vscode.postMessage({ type: 'find-next', query: findInput.value, backward: e.shiftKey });
-      } else if (e.key === 'Escape') {
-        e.preventDefault();
-        showFindBar(false);
-      }
-    });
-  }
+  findInput.addEventListener('keydown', (e) => {
+    e.stopPropagation();
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      post({ type: 'find-next', query: findInput.value, backward: e.shiftKey });
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      showFindBar(false);
+    }
+  });
 
-  if (findPrev) {
-    findPrev.addEventListener('click', () => {
-      vscode.postMessage({ type: 'find-next', query: findInput.value, backward: true });
-    });
-  }
-
-  if (findNextBtn) {
-    findNextBtn.addEventListener('click', () => {
-      vscode.postMessage({ type: 'find-next', query: findInput.value, backward: false });
-    });
-  }
-
-  if (findCloseBtn) {
-    findCloseBtn.addEventListener('click', () => showFindBar(false));
-  }
+  findPrev.addEventListener('click', () => {
+    post({ type: 'find-next', query: findInput.value, backward: true });
+  });
+  findNextBtn.addEventListener('click', () => {
+    post({ type: 'find-next', query: findInput.value, backward: false });
+  });
+  findCloseBtn.addEventListener('click', () => showFindBar(false));
 
   // ---- Context menu ----
   function hideContextMenu() {
-    if (contextMenu) {
-      contextMenu.style.display = 'none';
-      contextMenu.innerHTML = '';
-    }
+    contextMenu.style.display = 'none';
+    contextMenu.innerHTML = '';
   }
 
   function showContextMenu(x, y, items) {
-    if (!contextMenu) return;
     contextMenu.innerHTML = '';
     contextMenu.style.display = 'block';
-    // Position near click, but keep inside viewport
     const vw = window.innerWidth;
     const vh = window.innerHeight;
-    let left = x;
-    let top = y;
-    contextMenu.style.left = left + 'px';
-    contextMenu.style.top = top + 'px';
+    contextMenu.style.left = x + 'px';
+    contextMenu.style.top = y + 'px';
 
     for (const item of items) {
       if (item.separator) {
@@ -210,22 +239,17 @@
       contextMenu.appendChild(el);
     }
 
-    // Adjust position if overflows
     requestAnimationFrame(() => {
       const rect = contextMenu.getBoundingClientRect();
-      if (rect.right > vw) {
-        left = Math.max(0, x - rect.width);
-        contextMenu.style.left = left + 'px';
-      }
-      if (rect.bottom > vh) {
-        top = Math.max(0, y - rect.height);
-        contextMenu.style.top = top + 'px';
-      }
+      if (rect.right > vw) contextMenu.style.left = Math.max(0, x - rect.width) + 'px';
+      if (rect.bottom > vh) contextMenu.style.top = Math.max(0, y - rect.height) + 'px';
     });
   }
 
   document.addEventListener('click', () => hideContextMenu());
-  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') hideContextMenu(); });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') hideContextMenu();
+  });
 
   // ---- Smart address bar ----
   const ENGINE_URLS = {
@@ -233,11 +257,15 @@
     duckduckgo: 'https://duckduckgo.com/?q=',
     bing: 'https://www.bing.com/search?q=',
   };
+  const ENGINE_NAMES = { google: 'Google', duckduckgo: 'DuckDuckGo', bing: 'Bing' };
 
   function looksLikeUrl(s) {
     if (/^[a-zA-Z][a-zA-Z\d+\-.]*:/.test(s)) return true; // has scheme
     if (/\s/.test(s)) return false; // has space → query
-    if (/\.(com|io|net|org|dev|edu|gov|co|app|ai|xyz|me|info)(\/|$)/i.test(s)) return true;
+    if (/^localhost(:\d+)?(\/|$)/i.test(s)) return true;
+    if (/^[\d.]+(:\d+)?(\/|$)/.test(s)) return true; // bare IP
+    if (/^[^\s]+:\d+(\/|$)/.test(s)) return true; // host:port
+    if (/\.[a-z]{2,}(\/|:|$)/i.test(s)) return true; // anything.tld
     return false;
   }
 
@@ -250,8 +278,9 @@
       const engine = currentSearchEngine || 'google';
       url = (ENGINE_URLS[engine] || ENGINE_URLS.google) + encodeURIComponent(url);
     }
-    vscode.postMessage({ type: 'navigate', url });
+    post({ type: 'navigate', url });
     addToUrlHistory(rawValue.trim());
+    canvas.focus();
   }
 
   function addToUrlHistory(entry) {
@@ -278,23 +307,42 @@
     }
   }
 
-  urlbar.placeholder = 'Search or type URL';
+  let urlbarCurrent = '';
+  function setUrlbar(url) {
+    urlbarCurrent = url || '';
+    if (document.activeElement !== urlbar) {
+      urlbar.value = urlbarCurrent;
+    }
+  }
 
+  urlbar.addEventListener('focus', () => urlbar.select());
   urlbar.addEventListener('keydown', (e) => {
-    if (e.key !== 'Enter') return;
-    navigateToInput(urlbar.value);
+    e.stopPropagation();
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      navigateToInput(urlbar.value);
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      urlbar.value = urlbarCurrent;
+      canvas.focus();
+    } else {
+      handleGlobalShortcut(e);
+    }
   });
 
-  btnBack.addEventListener('click', () => vscode.postMessage({ type: 'back' }));
-  btnForward.addEventListener('click', () => vscode.postMessage({ type: 'forward' }));
-  btnReload.addEventListener('click', () => vscode.postMessage({ type: 'reload' }));
-  btnNewTab.addEventListener('click', () => vscode.postMessage({ type: 'new-tab', url: 'about:blank' }));
-
-  if (btnScreenshot) {
-    btnScreenshot.addEventListener('click', () => {
-      vscode.postMessage({ type: 'command', command: 'devBrowserPanel.takeScreenshot' });
-    });
-  }
+  // ---- Toolbar buttons ----
+  btnBack.addEventListener('click', () => post({ type: 'back' }));
+  btnForward.addEventListener('click', () => post({ type: 'forward' }));
+  btnReload.addEventListener('click', (e) => {
+    if (isLoading) post({ type: 'stop-loading' });
+    else post({ type: 'reload', hard: e.shiftKey });
+  });
+  btnNewTab.addEventListener('click', () => post({ type: 'new-tab', url: 'about:blank' }));
+  btnScreenshot.addEventListener('click', () => {
+    post({ type: 'command', command: 'devBrowserPanel.takeScreenshot' });
+  });
+  zoomChip.addEventListener('click', () => post({ type: 'zoom', direction: 'reset' }));
+  setLoading(false);
 
   // ---- Message handler ----
   window.addEventListener('message', (e) => {
@@ -304,21 +352,12 @@
     if (msg.type === 'frame') {
       const img = new Image();
       img.onload = () => {
-        browserW = img.naturalWidth || browserW;
-        browserH = img.naturalHeight || browserH;
-        // Feature 13d — frame mismatch detection
-        if (img.naturalWidth !== canvas.width || img.naturalHeight !== canvas.height) {
-          const key = `${img.naturalWidth}x${img.naturalHeight}_${canvas.width}x${canvas.height}`;
-          if (!_mismatchSeen.has(key)) {
-            _mismatchSeen.add(key);
-            console.warn(`[dev-browser-panel] frame ${img.naturalWidth}x${img.naturalHeight} ≠ canvas ${canvas.width}x${canvas.height} — degraded quality`);
-          }
-        }
-        // canvas.width/height are already in device pixels (DPR-aware),
-        // and the frame is rendered at the same device pixels by Chromium
-        // (we set deviceScaleFactor = dpr on viewport message). So this
-        // draw is effectively 1:1 — no upscale, crisp text.
-        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        pageW = msg.pageW || img.naturalWidth;
+        pageH = msg.pageH || img.naturalHeight;
+        lastFrameImg = img;
+        redraw();
+        // Frames arriving means the browser is alive again.
+        if (overlayKind !== 'none') showOverlay('none');
       };
       const mime = msg.format === 'png' ? 'image/png' : 'image/jpeg';
       img.src = 'data:' + mime + ';base64,' + msg.data;
@@ -331,85 +370,112 @@
     }
 
     if (msg.type === 'active-target') {
-      urlbar.value = msg.url || '';
+      activeTabId = msg.targetId || null;
+      urlbarCurrent = msg.url || '';
+      urlbar.value = urlbarCurrent;
       document.title = msg.title ? String(msg.title) + ' — Browser' : 'Browser';
+      // Chrome-like: blank tab → cursor in the address bar, ready to type.
+      if (!msg.url || msg.url === 'about:blank') {
+        urlbar.focus();
+        urlbar.select();
+      }
       return;
     }
 
-    if (msg.type === 'loading-start') {
-      startLoading();
+    if (msg.type === 'url-changed') {
+      setUrlbar(msg.url || '');
+      if (msg.title) document.title = String(msg.title) + ' — Browser';
       return;
     }
 
-    if (msg.type === 'loading-stop') {
-      stopLoading();
+    if (msg.type === 'nav-state') {
+      btnBack.disabled = !msg.canGoBack;
+      btnForward.disabled = !msg.canGoForward;
       return;
     }
 
-    if (msg.type === 'show-find') {
-      showFindBar(!!msg.active);
+    if (msg.type === 'loading-start') { startLoading(); return; }
+    if (msg.type === 'loading-stop') { stopLoadingBar(); return; }
+
+    if (msg.type === 'overlay') {
+      showOverlay(msg.kind || 'none', msg.text);
       return;
     }
+
+    if (msg.type === 'zoom-level') {
+      const z = Math.round((msg.zoom || 1) * 100);
+      if (z === 100) {
+        zoomChip.style.display = 'none';
+      } else {
+        zoomChip.style.display = '';
+        zoomChip.textContent = z + '%';
+      }
+      return;
+    }
+
+    if (msg.type === 'show-find') { showFindBar(!!msg.active); return; }
 
     if (msg.type === 'mobile-preset') {
-      if (mobileIndicator) {
-        if (msg.name && msg.name !== 'Desktop') {
-          mobileIndicator.textContent = '📱';
-          mobileIndicator.title = 'Mobile emulation: ' + msg.name;
-          mobileIndicator.style.display = '';
-        } else {
-          mobileIndicator.style.display = 'none';
-        }
+      if (msg.name && msg.name !== 'Desktop') {
+        mobileIndicator.textContent = '📱';
+        mobileIndicator.title = 'Mobile emulation: ' + msg.name;
+        mobileIndicator.style.display = '';
+      } else {
+        mobileIndicator.style.display = 'none';
       }
       return;
     }
 
     if (msg.type === 'context-hit-result') {
-      const rect = canvas.getBoundingClientRect();
-      // We stored the hit test position in a closure below
       buildContextMenu(msg.link, msg.imgSrc, _pendingContextX, _pendingContextY);
       return;
     }
 
     if (msg.type === 'search-engine') {
       currentSearchEngine = msg.engine || 'google';
+      urlbar.placeholder = 'Search ' + (ENGINE_NAMES[currentSearchEngine] || 'Google') + ' or type URL';
       return;
     }
   });
 
-  // Pending context menu position (set on right-click, used when hit-test result arrives)
+  // ---- Context menu build ----
   let _pendingContextX = 0;
   let _pendingContextY = 0;
 
   function buildContextMenu(link, imgSrc, pageX, pageY) {
     const items = [];
 
-    items.push({ label: 'Back', action: () => vscode.postMessage({ type: 'back' }) });
-    items.push({ label: 'Forward', action: () => vscode.postMessage({ type: 'forward' }) });
-    items.push({ label: 'Reload', action: () => vscode.postMessage({ type: 'reload' }) });
+    items.push({ label: 'Back', disabled: btnBack.disabled, action: () => post({ type: 'back' }) });
+    items.push({ label: 'Forward', disabled: btnForward.disabled, action: () => post({ type: 'forward' }) });
+    items.push({ label: 'Reload', action: () => post({ type: 'reload' }) });
     items.push({ separator: true });
 
     if (link) {
-      items.push({ label: 'Open Link: ' + link.slice(0, 40), action: () => vscode.postMessage({ type: 'navigate', url: link }) });
-      items.push({ label: 'Copy Link', action: () => navigator.clipboard.writeText(link).catch(() => undefined) });
+      items.push({ label: 'Open Link in New Tab', action: () => post({ type: 'new-tab', url: link }) });
+      items.push({ label: 'Open Link Here: ' + link.slice(0, 40), action: () => post({ type: 'navigate', url: link }) });
+      items.push({ label: 'Copy Link Address', action: () => post({ type: 'copy-text', text: link }) });
+      items.push({ separator: true });
     }
 
     if (imgSrc) {
-      items.push({ label: 'Copy Image URL', action: () => navigator.clipboard.writeText(imgSrc).catch(() => undefined) });
+      items.push({ label: 'Copy Image URL', action: () => post({ type: 'copy-text', text: imgSrc }) });
+      items.push({ separator: true });
     }
 
+    items.push({ label: 'Copy', action: () => post({ type: 'copy-request' }) });
+    items.push({ label: 'Cut', action: () => post({ type: 'cut-request' }) });
+    items.push({ label: 'Paste', action: () => post({ type: 'paste-request' }) });
+    items.push({ label: 'Select All', action: () => post({ type: 'select-all' }) });
     items.push({ separator: true });
-    items.push({ label: 'Copy', action: () => vscode.postMessage({ type: 'copy-request' }) });
-    items.push({ label: 'Paste', action: () => vscode.postMessage({ type: 'paste-request' }) });
-    items.push({ separator: true });
-    items.push({ label: 'View Source', action: () => vscode.postMessage({ type: 'command', command: 'devBrowserPanel.viewSource' }) });
-    items.push({ label: 'Inspect Element', action: () => vscode.postMessage({ type: 'command', command: 'devBrowserPanel.inspectElement' }) });
+    items.push({ label: 'View Source', action: () => post({ type: 'command', command: 'devBrowserPanel.viewSource' }) });
+    items.push({ label: 'Inspect Element', action: () => post({ type: 'command', command: 'devBrowserPanel.inspectElement' }) });
 
     showContextMenu(pageX, pageY, items);
   }
 
   // ---- Tab strip ----
   function renderTabs(tabList, activeTargetId) {
+    activeTabId = activeTargetId || activeTabId;
     tabsEl.innerHTML = '';
     for (const tab of tabList) {
       const el = document.createElement('div');
@@ -425,19 +491,26 @@
       closeBtn.textContent = '\xD7'; // ×
       closeBtn.addEventListener('click', (ev) => {
         ev.stopPropagation();
-        vscode.postMessage({ type: 'close-tab', targetId: tab.targetId });
+        post({ type: 'close-tab', targetId: tab.targetId });
       });
 
       el.appendChild(label);
       el.appendChild(closeBtn);
       el.addEventListener('click', () => {
-        vscode.postMessage({ type: 'switch-tab', targetId: tab.targetId });
+        post({ type: 'switch-tab', targetId: tab.targetId });
+      });
+      // Chrome-like: middle-click closes the tab.
+      el.addEventListener('auxclick', (ev) => {
+        if (ev.button === 1) {
+          ev.preventDefault();
+          post({ type: 'close-tab', targetId: tab.targetId });
+        }
       });
       tabsEl.appendChild(el);
     }
   }
 
-  // ---- Mouse input helpers ----
+  // ---- Mouse input ----
   function getModifiers(e) {
     return (e.altKey ? 1 : 0) | (e.ctrlKey ? 2 : 0) | (e.metaKey ? 4 : 0) | (e.shiftKey ? 8 : 0);
   }
@@ -449,32 +522,50 @@
     return 'none';
   }
 
-  function toCanvasCoords(e) {
+  // Maps a webview mouse event to page CSS coordinates, accounting for the
+  // aspect-fit dest rect and any size difference between canvas and page.
+  function toPageCoords(e) {
     const rect = canvas.getBoundingClientRect();
-    const cx = e.clientX - rect.left;
-    const cy = e.clientY - rect.top;
-    // Map CSS display pixels → browser viewport pixels
+    const cssX = e.clientX - rect.left;
+    const cssY = e.clientY - rect.top;
+    if (!dest || !pageW || !pageH || rect.width === 0 || rect.height === 0) {
+      return { x: cssX, y: cssY };
+    }
+    const r = canvas.width / rect.width; // device px per CSS px
+    const px = ((cssX * r) - dest.dx) / dest.dw * pageW;
+    const py = ((cssY * r) - dest.dy) / dest.dh * pageH;
     return {
-      x: browserW > 0 ? cx * browserW / rect.width : cx,
-      y: browserH > 0 ? cy * browserH / rect.height : cy,
+      x: Math.max(0, Math.min(pageW, px)),
+      y: Math.max(0, Math.min(pageH, py)),
     };
   }
 
-  // ---- Mouse events ----
   canvas.addEventListener('mousedown', (e) => {
     canvas.focus();
-    const { x, y } = toCanvasCoords(e);
-    vscode.postMessage({
+    const { x, y } = toPageCoords(e);
+    post({
       type: 'mouse',
-      event: { type: 'mousePressed', x, y, button: getButton(e), clickCount: 1, modifiers: getModifiers(e) },
+      event: {
+        type: 'mousePressed', x, y,
+        button: getButton(e),
+        buttons: e.buttons,
+        clickCount: Math.min(3, e.detail || 1),
+        modifiers: getModifiers(e),
+      },
     });
   });
 
   canvas.addEventListener('mouseup', (e) => {
-    const { x, y } = toCanvasCoords(e);
-    vscode.postMessage({
+    const { x, y } = toPageCoords(e);
+    post({
       type: 'mouse',
-      event: { type: 'mouseReleased', x, y, button: getButton(e), clickCount: 1, modifiers: getModifiers(e) },
+      event: {
+        type: 'mouseReleased', x, y,
+        button: getButton(e),
+        buttons: e.buttons,
+        clickCount: Math.min(3, e.detail || 1),
+        modifiers: getModifiers(e),
+      },
     });
   });
 
@@ -482,25 +573,27 @@
     const now = Date.now();
     if (now - lastMoveTime < 16) return; // ~60Hz
     lastMoveTime = now;
-    const { x, y } = toCanvasCoords(e);
-    vscode.postMessage({
+    const { x, y } = toPageCoords(e);
+    post({
       type: 'mouse',
-      event: { type: 'mouseMoved', x, y, button: 'none', modifiers: getModifiers(e) },
-    });
-  });
-
-  canvas.addEventListener('dblclick', (e) => {
-    const { x, y } = toCanvasCoords(e);
-    vscode.postMessage({
-      type: 'mouse',
-      event: { type: 'mousePressed', x, y, button: getButton(e), clickCount: 2, modifiers: getModifiers(e) },
+      event: {
+        type: 'mouseMoved', x, y,
+        button: 'none',
+        buttons: e.buttons, // keep drags/selections alive
+        modifiers: getModifiers(e),
+      },
     });
   });
 
   canvas.addEventListener('wheel', (e) => {
     e.preventDefault();
-    const { x, y } = toCanvasCoords(e);
-    vscode.postMessage({
+    // Cmd/Ctrl+wheel = zoom, like Chrome.
+    if (e.metaKey || e.ctrlKey) {
+      post({ type: 'zoom', direction: e.deltaY < 0 ? 'in' : 'out' });
+      return;
+    }
+    const { x, y } = toPageCoords(e);
+    post({
       type: 'mouse',
       event: { type: 'mouseWheel', x, y, button: 'none', deltaX: e.deltaX, deltaY: e.deltaY, modifiers: getModifiers(e) },
     });
@@ -509,14 +602,10 @@
   canvas.addEventListener('contextmenu', (e) => {
     e.preventDefault();
     hideContextMenu();
-    const rect = canvas.getBoundingClientRect();
-    _pendingContextX = e.clientX - rect.left + rect.left;
-    _pendingContextY = e.clientY - rect.top + rect.top;
-    const { x, y } = toCanvasCoords(e);
-    // Store absolute page coordinates for the menu
     _pendingContextX = e.clientX;
     _pendingContextY = e.clientY;
-    vscode.postMessage({ type: 'context-hit-test', x, y });
+    const { x, y } = toPageCoords(e);
+    post({ type: 'context-hit-test', x, y });
   });
 
   // ---- Keyboard input ----
@@ -535,48 +624,88 @@
     return 0;
   }
 
+  // Browser-level shortcuts that should work from the URL bar too.
+  // Returns true when handled.
+  function handleGlobalShortcut(e) {
+    const mod = e.metaKey || e.ctrlKey;
+    const k = e.key.toLowerCase();
+    if ((mod && k === 'r') || e.key === 'F5') {
+      e.preventDefault();
+      post({ type: 'reload', hard: e.shiftKey });
+      return true;
+    }
+    if (mod && k === 't') {
+      e.preventDefault();
+      post({ type: 'new-tab', url: 'about:blank' });
+      return true;
+    }
+    if (mod && k === 'w') {
+      e.preventDefault();
+      if (activeTabId) post({ type: 'close-tab', targetId: activeTabId });
+      return true;
+    }
+    if (mod && k === 'l') {
+      e.preventDefault();
+      urlbar.focus();
+      urlbar.select();
+      return true;
+    }
+    return false;
+  }
+
   canvas.addEventListener('keydown', (e) => {
     e.preventDefault();
+    if (handleGlobalShortcut(e)) return;
+
+    const mod = e.metaKey || e.ctrlKey;
+    const k = e.key.toLowerCase();
+
+    // Clipboard + editing
+    if (mod && k === 'c') { post({ type: 'copy-request' }); return; }
+    if (mod && k === 'x') { post({ type: 'cut-request' }); return; }
+    if (mod && k === 'v') { post({ type: 'paste-request' }); return; }
+    if (mod && k === 'a') { post({ type: 'select-all' }); return; }
+
+    // Find in page
+    if (mod && k === 'f') { showFindBar(true); return; }
+
+    // History
+    if (e.altKey && e.key === 'ArrowLeft') { post({ type: 'back' }); return; }
+    if (e.altKey && e.key === 'ArrowRight') { post({ type: 'forward' }); return; }
+    if (mod && e.key === '[') { post({ type: 'back' }); return; }
+    if (mod && e.key === ']') { post({ type: 'forward' }); return; }
+
+    // Zoom
+    if (mod && (e.key === '=' || e.key === '+')) { post({ type: 'zoom', direction: 'in' }); return; }
+    if (mod && e.key === '-') { post({ type: 'zoom', direction: 'out' }); return; }
+    if (mod && e.key === '0') { post({ type: 'zoom', direction: 'reset' }); return; }
+
+    // Esc: close UI chrome, stop loading, then let the page see it too.
+    if (e.key === 'Escape') {
+      hideContextMenu();
+      if (isLoading) post({ type: 'stop-loading' });
+    }
+
     const modifiers = getModifiers(e);
     const kc = keyCode(e.key);
     const isPrintable = e.key.length === 1 && !e.ctrlKey && !e.metaKey;
 
-    // Feature 12 — Copy/paste interception
-    if ((e.metaKey || e.ctrlKey) && e.key === 'c') {
-      vscode.postMessage({ type: 'copy-request' });
-      return;
-    }
-    if ((e.metaKey || e.ctrlKey) && e.key === 'v') {
-      vscode.postMessage({ type: 'paste-request' });
-      return;
-    }
-
-    // Feature 1 — Find in page (Cmd+F / Ctrl+F)
-    if ((e.metaKey || e.ctrlKey) && e.key === 'f') {
-      showFindBar(true);
-      return;
-    }
-
-    // Puppeteer/Playwright pattern:
-    //   - printable: rawKeyDown (no text) + char (inserts the text)
-    //   - non-printable (Enter, Tab, arrows, etc): just keyDown
-    // Sending keyDown WITH text AND a char event causes Chromium to insert
-    // the character twice ("aa" instead of "a"), since keyDown with non-empty
-    // text already synthesizes a char event internally.
-    vscode.postMessage({
-      type: 'key',
-      event: {
-        type: isPrintable ? 'rawKeyDown' : 'keyDown',
-        key: e.key,
-        code: e.code,
-        keyCode: kc,
-        modifiers,
-        autoRepeat: e.repeat,
-      },
-    });
-
     if (isPrintable) {
-      vscode.postMessage({
+      // Puppeteer/Playwright pattern: rawKeyDown (no text) + char (inserts the
+      // text). keyDown WITH text would synthesize a second insert ("aa").
+      post({
+        type: 'key',
+        event: {
+          type: 'rawKeyDown',
+          key: e.key,
+          code: e.code,
+          keyCode: kc,
+          windowsVirtualKeyCode: kc,
+          modifiers,
+          autoRepeat: e.repeat,
+        },
+      });
+      post({
         type: 'key',
         event: {
           type: 'char',
@@ -588,22 +717,56 @@
           code: e.code,
         },
       });
+    } else if (e.key === 'Enter') {
+      // Enter must carry text '\r': without it Chromium fires no keypress, so
+      // forms don't submit and textareas don't get a newline.
+      post({
+        type: 'key',
+        event: {
+          type: 'keyDown',
+          key: 'Enter',
+          code: e.code || 'Enter',
+          keyCode: 13,
+          windowsVirtualKeyCode: 13,
+          text: '\r',
+          unmodifiedText: '\r',
+          modifiers,
+          autoRepeat: e.repeat,
+        },
+      });
+    } else {
+      post({
+        type: 'key',
+        event: {
+          type: 'keyDown',
+          key: e.key,
+          code: e.code,
+          keyCode: kc,
+          windowsVirtualKeyCode: kc,
+          modifiers,
+          autoRepeat: e.repeat,
+        },
+      });
     }
   });
 
   canvas.addEventListener('keyup', (e) => {
+    const mod = e.metaKey || e.ctrlKey;
+    const k = e.key.toLowerCase();
+    // Don't echo keyups for combos we intercepted on keydown.
+    if (mod && ['c', 'x', 'v', 'a', 'f', 'r', 't', 'w', 'l', '[', ']', '=', '+', '-', '0'].includes(k)) return;
+    if (e.key === 'F5') return;
     const modifiers = getModifiers(e);
     const kc = keyCode(e.key);
-    vscode.postMessage({
+    post({
       type: 'key',
       event: {
         type: 'keyUp',
         key: e.key,
         code: e.code,
         keyCode: kc,
+        windowsVirtualKeyCode: kc,
         modifiers,
-        text: '',
-        unmodifiedText: '',
       },
     });
   });

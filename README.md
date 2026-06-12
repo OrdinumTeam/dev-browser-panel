@@ -16,28 +16,44 @@ VS Code extension that embeds a Chromium browser inside the editor, controllable
 └────────────────────────────────────────────┘
 ```
 
-## What's new in v0.4.0
+## What's new in v0.5.0 — hardened
 
-13 features bringing the embedded browser closer to native Chrome:
+This release makes the embedded browser behave like a real Chrome and survive the real world:
 
-1. **Find in page** (Cmd+F / Ctrl+F) — overlay bar with match navigation (↑↓) and close (Esc)
-2. **Smart address bar** — auto-detects URLs vs. search queries; configurable search engine
-3. **Loading progress bar** — 3px animated bar + `$(sync~spin)` status during page loads
-4. **Right-click context menu** — Back / Forward / Reload / Copy link / Copy image / Copy / Paste / View source / Inspect
-5. **Download manager** (`Dev Browser Panel: Show Downloads`) — progress tracking, toast on complete, "Open Folder" action
-6. **Mobile emulation** (`Dev Browser Panel: Toggle Mobile Emulation`) — cycles Desktop → iPhone 15 Pro → iPad Pro → Galaxy S24
-7. **View source** (`Dev Browser Panel: View Source`) — opens document HTML in a VS Code editor tab
-8. **Screenshot** (`Dev Browser Panel: Take Screenshot` / `Take Full Page Screenshot`) — PNG with save dialog
-9. **Save as PDF** (`Dev Browser Panel: Save as PDF`) — Page.printToPDF with background
-10. **Element inspector** (`Dev Browser Panel: Inspect Element`) — CDP Overlay highlight mode with computed styles panel
-11. **Storage editor** (`Dev Browser Panel: Show Storage`) — Cookies, LocalStorage, SessionStorage tabs with delete/clear
-12. **Clipboard integration** — Cmd+C copies selection from Chromium; Cmd+V pastes from system clipboard
-13. **Render diagnostics** (`Dev Browser Panel: Show Render Diagnostics`) — DPR, canvas size, frame size, format, FPS table
+**Basics that now just work**
+- **Enter** submits forms and inserts newlines (was silently dead inside pages)
+- **Copy / Cut / Paste / Select All** (Cmd/Ctrl+C/X/V/A) — including selections inside `<input>`/`<textarea>`
+- **Back / Forward** use real navigation history; buttons enable/disable correctly; URL bar updates live on link clicks and SPA navigations
+- **Reload** (Cmd/Ctrl+R, F5, Shift = hard reload) and **Stop** (button turns ✕ while loading, Esc)
+- **Zoom** 25%–300% (Cmd/Ctrl + / − / 0, or Cmd/Ctrl+wheel)
+- Screenshot button, context-menu View Source / Inspect — previously dead — now wired
 
-**Also fixed:**
-- `Dev Browser Panel: Open` no longer forces the Logs panel open — set `devBrowserPanel.autoOpenLogs: true` to restore old behaviour
-- Screencast now defers start until viewport dimensions are known (fixes initial wrong-resolution frames on Retina)
-- `image-rendering: -webkit-optimize-contrast` on the canvas for sharper rendering at fractional DPR
+**Bulletproofing**
+- `alert()` / `confirm()` / `prompt()` / `beforeunload` **never freeze a tab again** — auto-answered or surfaced as VS Code dialogs (60 s fallback)
+- Chromium crash or CDP disconnect → overlay with **Restart Browser**; the panel rebinds in place
+- Tab renderer crash → **Reload Tab** overlay
+- Orphaned Chromium processes from killed windows are **detected and reaped**
+- Closing the last tab opens a fresh one (no dead browser)
+- Session restore: your tabs come back on restart (`devBrowserPanel.restoreTabs`)
+
+**Multi-window isolation (no more cross-window interference)**
+- Same workspace open in two VS Code windows: each gets its own profile (`chromium-profile`, `chromium-profile-2`, …) — no more ProcessSingleton startup failures
+- `~/.dev-browser-panel/port` is now **first-window-wins** (taken over only when the owner dies), so CLIs/agents aren't silently re-pointed at another window mid-session; `<workspace>/.dev-browser-panel/port` is always the precise pointer
+
+Full details in [CHANGELOG.md](./CHANGELOG.md).
+
+## Keyboard shortcuts (viewer focused)
+
+| Shortcut | Action |
+|---|---|
+| Cmd/Ctrl+R · F5 | Reload (Shift+ = hard reload, ignore cache) |
+| Esc | Stop loading / close find & menus |
+| Alt+← / Alt+→ · Cmd/Ctrl+[ / ] | Back / Forward |
+| Cmd/Ctrl+L | Focus address bar |
+| Cmd/Ctrl+T / Cmd/Ctrl+W | New tab / Close tab (middle-click a tab also closes) |
+| Cmd/Ctrl+C / X / V / A | Copy / Cut / Paste / Select All (system clipboard) |
+| Cmd/Ctrl+F | Find in page |
+| Cmd/Ctrl+= / − / 0 · Cmd/Ctrl+wheel | Zoom in / out / reset |
 
 ---
 
@@ -52,16 +68,17 @@ VS Code extension that embeds a Chromium browser inside the editor, controllable
 - **Copy HAR** — one click exports captured network traffic as HAR 1.2 (headers + response bodies, importable to Chrome DevTools, Postman, har-analyzer, etc.). Memory-capped at ~35MB to keep the webview light.
 - **Multi-tab** — open multiple Chromium targets, switch with tab strip
 - **Autoreload** — file watcher on workspace, debounced `Page.reload` on the active tab
-- **Per-instance isolation** — each VS Code window gets its own Chromium with its own profile (cookies/localStorage isolated), automatically allocated to a free port starting at `cdpPort` (default `9333`, scans next 50 if busy)
-- **Workspace-local port file** for auto-discovery — `<workspace>/.dev-browser-panel/port` so terminals in that project pick up the right browser. A global pointer at `~/.dev-browser-panel/port` (most recently opened) is also maintained.
+- **Per-instance isolation** — each VS Code window gets its own Chromium with its own profile (cookies/localStorage isolated), automatically allocated to a free port starting at `cdpPort` (default `9333`, scans next 50 if busy). Same workspace in two windows → suffixed profiles (`chromium-profile-2`, …); orphaned Chromiums from crashed windows are reaped at startup.
+- **Workspace-local port file** for auto-discovery — `<workspace>/.dev-browser-panel/port` so terminals in that project pick up the right browser. A global pointer at `~/.dev-browser-panel/port` is owned by the **first** window and only taken over when that window dies — external clients are never re-pointed mid-session.
+- **Resilient by design** — JS dialogs auto-handled (no frozen tabs), crash/disconnect detection with one-click restart, tab restore, CDP call timeouts.
 
 ## Quick Start
 
 ```bash
 npm install
 npm run compile
-npm run package    # produces dev-browser-panel-0.1.0.vsix
-code --install-extension dev-browser-panel-0.1.0.vsix
+npm run package    # produces dev-browser-panel-0.5.0.vsix
+code --install-extension dev-browser-panel-0.5.0.vsix
 ```
 
 Then in VS Code: `Cmd+Shift+P` → `Dev Browser Panel: Open`.
@@ -75,6 +92,7 @@ All available via `Cmd+Shift+P` (macOS) / `Ctrl+Shift+P` (Linux/Windows):
 | `Dev Browser Panel: Open` | Start Chromium, open the viewer panel |
 | `Dev Browser Panel: New Tab` | Prompt for URL, open it in a new Chromium target |
 | `Dev Browser Panel: Reload Current Tab` | `Page.reload` on the active target |
+| `Dev Browser Panel: Go Back` / `Go Forward` | Navigate the active tab's real history |
 | `Dev Browser Panel: Toggle Autoreload` | Toggle file-watcher-driven reload on/off |
 | `Dev Browser Panel: Show Logs` | Reveal the Browser Logs panel |
 | `Dev Browser Panel: Stop Chromium` | Kill the embedded Chromium and delete the port file |
@@ -108,7 +126,7 @@ console.log(await page.title());
 EOF
 ```
 
-The fallback to `~/.dev-browser-panel/port` works because the extension writes a "most-recently-opened" global pointer there too. If you're not in a project root, you still hit *some* browser.
+The fallback to `~/.dev-browser-panel/port` works because the first window claims a global pointer there (kept stable until that window closes). If you're not in a project root, you still hit *some* browser — but with multiple VS Code windows open, always prefer the workspace-local file.
 
 > Add `.dev-browser-panel/` to your project's `.gitignore` — it contains the Chromium profile and shouldn't be committed.
 
@@ -189,6 +207,7 @@ The `Host: localhost` header is required (CDP rejects `Host: 127.0.0.1` for DNS-
 | `devBrowserPanel.autoOpenLogs` | `false` | If `true`, automatically reveals the Logs panel when `Open` is called (old behaviour). |
 | `devBrowserPanel.searchEngine` | `"google"` | Search engine used by the smart address bar: `"google"` / `"duckduckgo"` / `"bing"`. |
 | `devBrowserPanel.downloadPath` | _(auto)_ | Directory for downloads. Blank = `<workspace>/.dev-browser-panel/downloads/`. |
+| `devBrowserPanel.restoreTabs` | `true` | Reopen the previous session's tabs when the browser starts. |
 
 ## How it finds Chromium
 
@@ -210,7 +229,7 @@ If you need a deterministic port for a specific workspace, override in that proj
 { "devBrowserPanel.cdpPort": 9444 }
 ```
 
-Each project's actual port is in `<project>/.dev-browser-panel/port`. The global `~/.dev-browser-panel/port` points to the most-recently-opened session.
+Each project's actual port is in `<project>/.dev-browser-panel/port`. The global `~/.dev-browser-panel/port` belongs to the **first window that claimed it** and is only taken over when that window's process dies — prefer the workspace-local file when more than one VS Code window is open.
 
 ### Chromium not found
 

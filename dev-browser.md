@@ -19,9 +19,18 @@ fi
 ```
 
 - `.dev-browser-panel/port` (project-local) tem prioridade — é o Chromium **desta** janela do VS Code.
-- `~/.dev-browser-panel/port` é fallback global ("último aberto").
+- `~/.dev-browser-panel/port` é fallback global: pertence à **primeira janela** que o
+  reivindicou e só muda de dono quando essa janela morre (desde v0.5.0 — antes era
+  "último aberto", o que redirecionava agentes para a janela errada no meio da sessão).
 
-Cada janela do VS Code tem seu próprio Chromium isolado (profile, cookies, localStorage separados).
+Cada janela do VS Code tem seu próprio Chromium isolado (profile, cookies, localStorage
+separados). Mesmo workspace aberto em duas janelas → perfis sufixados
+(`chromium-profile-2`, …) e portas diferentes; sempre use o arquivo de porta local.
+
+Desde v0.5.0 a sessão é resiliente: diálogos JS (`alert`/`confirm`/`prompt`) são
+respondidos automaticamente ou via VS Code (a página nunca congela), crash de
+renderer/Chromium mostra overlay com restart de um clique, e as guias da sessão
+anterior são restauradas ao abrir (`devBrowserPanel.restoreTabs`).
 
 ## Dirigir o browser
 

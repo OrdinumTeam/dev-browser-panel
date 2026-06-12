@@ -1,5 +1,50 @@
 # Changelog
 
+## [0.5.0] - 2026-06-11
+
+Hardening release: the embedded browser no longer freezes, loses its window, or
+fights other VS Code windows — and the basics (Enter, copy/paste, back/forward,
+reload) now behave like a real Chrome.
+
+### Fixed — basic functionality
+- **Enter now works inside pages**: form submit and textarea newlines were dead because `keyDown` was sent without `text: '\r'` (no `keypress` synthesized). Verified against real Chromium.
+- **Cmd/Ctrl+A selects all** — plain key events do nothing in headless Chromium; now sent with `commands: ["selectAll"]`.
+- **Copy covers `<input>`/`<textarea>` selections** (`window.getSelection()` misses them); added **Cut** (Cmd/Ctrl+X).
+- **Screenshot toolbar button and context-menu "View Source"/"Inspect Element" were dead** — the webview's `command` message was never handled by the extension.
+- **URL bar updates live** when you click links or the page uses pushState (`Page.frameNavigated` + `Page.navigatedWithinDocument`).
+- **Back/Forward use real navigation history** (`Page.getNavigationHistory`/`navigateToHistoryEntry`) instead of `history.back()` injection; buttons enable/disable from actual history state.
+- **Downloads actually register**: migrated to `Browser.setDownloadBehavior` + `Browser.download*` events (the `Page.*` variants were removed from modern Chromium).
+- **Element inspector**: `DOM.enable` before `Overlay.enable` (it errored without it); clicking an element now opens its outer HTML beside the editor.
+- **Mobile emulation survives panel resizes** (viewport messages no longer stomp the preset); frames are letterboxed aspect-correct instead of stretched, and mouse coordinates map through the page's real CSS size from screencast metadata.
+- **New tab becomes the active tab** (Chrome behavior).
+- **Double-click no longer sends a stray extra mousePressed**; `clickCount` comes from `e.detail` (double/triple-click selection works).
+- **Drag text selection** works: `mousemove` now carries the `buttons` bitmask.
+
+### Added — resilience ("blindado")
+- **JS dialogs can no longer freeze a tab**: `alert`/`beforeunload` are auto-accepted; `confirm`/`prompt` surface as VS Code dialogs, with a 60 s fallback answer if ignored. Unanswered dialogs were permanently hanging the page.
+- **Crash recovery**: `Inspector.targetCrashed` → in-panel overlay + "Reload Tab" (also as a toast).
+- **Chromium death / CDP disconnect detected**: status bar goes OFF, the viewer shows a "Restart Browser" overlay, port/owner files are cleaned up. The panel rebinds to the new session in place — no need to close/reopen it.
+- **Closing the last tab opens a fresh one** instead of leaving a dead browser.
+- **Orphaned Chromium processes are reaped**: if a previous extension host died without cleanup, its Chromium is detected (profile-verified) and killed on next start.
+- **Same workspace in two VS Code windows no longer collides**: profile claiming with owner files; the second window gets `chromium-profile-2` instead of dying on Chromium's ProcessSingleton lock.
+- **Global `~/.dev-browser-panel/port` is now first-window-wins** (with stale-owner takeover): external agents/CLIs are no longer silently re-pointed at a different window mid-session. Per-workspace `.dev-browser-panel/port` remains the precise pointer.
+- **CDP calls carry a 30 s timeout** (120 s for screenshot/PDF) — no permanently hung awaits.
+- **Session restore**: tabs from the previous session reopen on start (`devBrowserPanel.restoreTabs`, default `true`).
+
+### Added — Chrome-like UX
+- **Keyboard shortcuts in the viewer**: Cmd/Ctrl+R and F5 reload (Shift = hard reload), Cmd/Ctrl+L focus address bar, Cmd/Ctrl+T new tab, Cmd/Ctrl+W close tab, Alt+←/→ and Cmd/Ctrl+[/] history, Cmd/Ctrl+C/X/V/A clipboard, Esc stops loading, Cmd/Ctrl+=/−/0 zoom (also Cmd/Ctrl+wheel).
+- **Zoom** with Chrome's ladder (25%–300%) and a toolbar chip (click to reset).
+- **Reload button turns into Stop (✕) while loading.**
+- **Context menu**: Open Link in New Tab, Copy Link Address (via VS Code clipboard — the webview clipboard API is sandboxed), Cut, Select All.
+- **Middle-click closes tabs**; blank tabs focus the address bar; Esc in the URL bar restores the current URL.
+- Smarter URL detection: `localhost:3000`, bare IPs, `host:port`, any `.tld` path.
+- New commands: `Dev Browser Panel: Go Back` / `Go Forward`.
+- Status bar tooltip shows port, profile path and the CLI connect hint.
+- View Source / inspected node open as untitled editors (no temp-file litter); screenshot/PDF dialogs default to a timestamped name in the workspace.
+
+### Internal
+- `scripts/smoke-session.js`: integration smoke test against real headless Chromium (29 checks: lifecycle, history, dialogs, last-tab guard, multi-instance isolation, orphan reaping, crash detection, clean stop).
+
 ## [0.4.0] - 2026-05-22
 
 ### Added
